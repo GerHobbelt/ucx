@@ -9,14 +9,14 @@ jobs:
     pool:
       name: MLNX
       demands:
-        - harbor_registry -equals yes
+        - ucx_bf -equals yes
 
     # we need to use lowest version for compatible
-    container: centos7_cuda11
+    container: centos8_cuda11
 
     steps:
       - checkout: self
-        clean: true
+        clean: false  # THIS MF
         fetchDepth: 100
         path: "we/need/to/go/deeper"
         # ^workaround agent issue with container in root path

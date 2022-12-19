@@ -11,16 +11,12 @@ pr:
 
 resources:
   containers:
-    - container: centos7_cuda11
-      image: rdmz-harbor.rdmz.labs.mlnx/ucx/centos7-mofed5-cuda11:2
     - container: centos8_cuda11
-      image: rdmz-harbor.rdmz.labs.mlnx/ucx/centos8-mofed5-cuda11:2
-    - container: ubuntu16_cuda11
-      image: rdmz-harbor.rdmz.labs.mlnx/ucx/ubuntu16.04-mofed5-cuda11:3
+      image: rdmz-harbor.rdmz.labs.mlnx/ucx/aarch64/centos8-mofed5-cuda11:2
     - container: ubuntu18_cuda11
-      image: rdmz-harbor.rdmz.labs.mlnx/ucx/ubuntu18.04-mofed5-cuda11:3
+      image: rdmz-harbor.rdmz.labs.mlnx/ucx/aarch64/ubuntu18.04-mofed5-cuda11:3
     - container: ubuntu20_cuda11
-      image: rdmz-harbor.rdmz.labs.mlnx/ucx/ubuntu20.04-mofed5-cuda11:3
+      image: rdmz-harbor.rdmz.labs.mlnx/ucx/aarch64/ubuntu20.04-mofed5-cuda11:3
 
 stages:
   - stage: Prepare
@@ -30,16 +26,18 @@ stages:
           name: MLNX
           demands:
           - ucx_docker -equals yes
+          # - ucx_bf -equals yes  # It doesn't matter
         steps:
           - checkout: self
             fetchDepth: 100
-            clean: true
+            clean: false    # THIS MF
 
           - bash: |
               set -eE
               source ./buildlib/az-helpers.sh
               set -x
-              check_release_build $(Build.Reason) $(Build.SourceVersion) "AZP/RELEASE: "
+              # check_release_build $(Build.Reason) $(Build.SourceVersion) "AZP/RELEASE: "
+              check_release_build 'IndividualCI' $(Build.SourceVersion) "AZP/RELEASE: " #HACK
             name: Result
             displayName: Check build condition
 
@@ -50,18 +48,19 @@ stages:
     jobs:
       - job: DraftRelease
         displayName: Create draft release
-        container: centos7_cuda11
+        container: centos8_cuda11
         pool:
           name: MLNX
           demands:
-          - ucx_docker -equals yes
+          - ucx_bf -equals yes
         steps:
         - checkout: self
-          clean: true
+          clean: false  # THIS MF
           fetchDepth: 100
           path: "we/need/to/go/deeper"
 
-        - bash: ./autogen.sh
+        # - bash: ./autogen.sh
+        - bash: exit 0  # temp skip
           displayName: Setup autotools
 
         - bash: |
@@ -102,3 +101,4 @@ stages:
             target: publish-release
           ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
             target: package
+          # target: package   # HACK
