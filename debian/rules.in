@@ -16,6 +16,10 @@ CUDA_OPT = $(shell echo ${DEB_BUILD_PROFILES} | grep -qw cuda \
 	dh $@ 
 
 override_dh_auto_configure:
+	ls -l ./contrib/configure-release-mt	# DEBUG
+	ls -l ./contrib	# DEBUG
+	df -h contrib/	# DEBUG
+
 	./contrib/configure-release-mt --prefix=/usr \
 		--enable-examples --with-java=no \
 		$(CUDA_OPT)
