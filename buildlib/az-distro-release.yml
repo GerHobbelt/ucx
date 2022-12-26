@@ -4,6 +4,8 @@ jobs:
     variables:
       ${{ if eq(variables['Build.Reason'], 'ResourceTrigger') }}:
         POSTFIX: ucx-${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}
+      # ${{ if eq(variables['Build.Reason'], 'IndividualCI') }}:
+      #   POSTFIX: ucx-${{ replace(variables['Build.SourceBranch'], 'refs/heads/', '') }}   # TMP Hack to test by trigger: push
       ${{ if eq(variables['Build.Reason'], 'IndividualCI') }}:
         POSTFIX: ucx-${{ replace(variables['Build.SourceBranch'], 'refs/tags/', '') }}
       ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
@@ -18,19 +20,19 @@ jobs:
       matrix:
         centos8_cuda11:
           build_container: centos8_cuda11
-          artifact_name: $(POSTFIX)-centos8-mofed5-cuda11.tar.bz2
+          artifact_name: $(POSTFIX)-centos8-mofed5-cuda11-aarch64.tar.bz2
         ubuntu18_cuda11:
           build_container: ubuntu18_cuda11
-          artifact_name: $(POSTFIX)-ubuntu18.04-mofed5-cuda11.deb
+          artifact_name: $(POSTFIX)-ubuntu18.04-mofed5-cuda11-aarch64.deb
         ubuntu20_cuda11:
           build_container: ubuntu20_cuda11
-          artifact_name: $(POSTFIX)-ubuntu20.04-mofed5-cuda11.deb
+          artifact_name: $(POSTFIX)-ubuntu20.04-mofed5-cuda11-aarch64.deb
 
     container: $[ variables['build_container'] ]
 
     steps:
       - checkout: self
-        clean: false  # THIS MF
+        clean: true
         fetchDepth: 100
         path: "we/need/to/go/deeper"
         # ^ Avoid rpmbuild error: Dest dir longer than base dir is not supported
@@ -59,10 +61,13 @@ jobs:
       - bash: |
           set -eEx
           cd pkg-build
-          ls -l ./contrib/configure-release-mt	|| true   # DEBUG
-          df -h contrib/    # DEBUG
+          echo "PWD: $(pwd)"
+          # ls -l $(Build.SourcesDirectory)     # /__w/5/we/need/to/go/deeper
+          ls -l $(Build.SourcesDirectory)/contrib/configure-release-mt   || true
+
           echo 10 > debian/compat
           dpkg-buildpackage -us -uc
+
           find .. -name '*.deb'
           find .. -name '*.deb' -exec cp {} "../${AZ_ARTIFACT_NAME}" \;
           dpkg-deb -I "../${AZ_ARTIFACT_NAME}"
@@ -76,7 +81,8 @@ jobs:
         displayName: Upload artifacts
         inputs:
           githubConnection: release
-          repositoryName: openucx/ucx
+          # repositoryName: openucx/ucx
+          repositoryName: Al3xR01/ucx   # TMP DEBUG
           action: edit
           tag: $(Build.SourceBranchName)
           isDraft: true

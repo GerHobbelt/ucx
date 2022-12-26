@@ -7,7 +7,7 @@
 # This special exception was added by Craig Small in version 0.37 of dh-make.
 
 # Uncomment this to turn on verbose mode.
-#export DH_VERBOSE=1
+export DH_VERBOSE=1
 
 CUDA_OPT = $(shell echo ${DEB_BUILD_PROFILES} | grep -qw cuda \
 	&& echo --with-cuda=/usr/local/cuda || echo --without-cuda)
@@ -16,11 +16,7 @@ CUDA_OPT = $(shell echo ${DEB_BUILD_PROFILES} | grep -qw cuda \
 	dh $@ 
 
 override_dh_auto_configure:
-	ls -l ./contrib/configure-release-mt	# DEBUG
-	ls -l ./contrib	# DEBUG
-	df -h contrib/	# DEBUG
-
-	./contrib/configure-release-mt --prefix=/usr \
+	../contrib/configure-release-mt --prefix=/usr \
 		--enable-examples --with-java=no \
 		$(CUDA_OPT)
 	chmod +x debian/rules
