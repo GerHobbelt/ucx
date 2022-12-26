@@ -2,10 +2,14 @@
 # This pipeline to be run on tags creation
 
 trigger:
+  # branches:   # TMP - start upon push
+  #   include:
+  #   - arm
   tags:
     include:
       - v*
 pr:
+  - arm
   - master
   - v*.*.x
 
@@ -26,18 +30,17 @@ stages:
           name: MLNX
           demands:
           - ucx_docker -equals yes
-          # - ucx_bf -equals yes  # It doesn't matter
         steps:
           - checkout: self
             fetchDepth: 100
-            clean: false    # THIS MF
+            clean: true
 
           - bash: |
               set -eE
               source ./buildlib/az-helpers.sh
               set -x
-              # check_release_build $(Build.Reason) $(Build.SourceVersion) "AZP/RELEASE: "
-              check_release_build 'IndividualCI' $(Build.SourceVersion) "AZP/RELEASE: " #HACK
+              check_release_build $(Build.Reason) $(Build.SourceVersion) "AZP/RELEASE: "
+              # check_release_build 'IndividualCI' $(Build.SourceVersion) "AZP/RELEASE: " #HACK
             name: Result
             displayName: Check build condition
 
@@ -55,17 +58,16 @@ stages:
           - ucx_bf -equals yes
         steps:
         - checkout: self
-          clean: false  # THIS MF
+          clean: true
           fetchDepth: 100
           path: "we/need/to/go/deeper"
 
-        # - bash: ./autogen.sh
-        - bash: exit 0  # temp skip
+        - bash: ./autogen.sh
           displayName: Setup autotools
 
         - bash: |
-            set -eE
-            gcc --version
+            set -eEx
+            # gcc --version
             ./contrib/configure-release --with-java=no
             ./contrib/buildrpm.sh -s -t -b
           displayName: Build tarball
@@ -75,7 +77,8 @@ stages:
           displayName: Create/edit GitHub Draft Release
           inputs:
             githubConnection: release
-            repositoryName: openucx/ucx
+            # repositoryName: openucx/ucx
+            repositoryName: Al3xR01/ucx   # TMP DEBUG
             action: edit
             tag: $(Build.SourceBranchName)
             isDraft: true
@@ -101,4 +104,3 @@ stages:
             target: publish-release
           ${{ if eq(variables['Build.Reason'], 'PullRequest') }}:
             target: package
-          # target: package   # HACK

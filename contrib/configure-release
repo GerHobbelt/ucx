@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/sh -eEx
 #
 # Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2001-2014. ALL RIGHTS RESERVED.
 #
@@ -10,8 +10,8 @@
 # No extra debugging or profiling code.
 #
 
-basedir=$(cd $(dirname $0) && pwd)
-$basedir/../configure \
+basedir=$(cd "$(dirname "$0")" && pwd)
+"$basedir"/../configure \
 	--disable-logging \
 	--disable-debug \
 	--disable-assertions \
