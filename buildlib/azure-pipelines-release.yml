@@ -77,8 +77,8 @@ stages:
           displayName: Create/edit GitHub Draft Release
           inputs:
             githubConnection: release
-            # repositoryName: openucx/ucx
-            repositoryName: Al3xR01/ucx   # TMP DEBUG
+            repositoryName: openucx/ucx
+            # repositoryName: Al3xR01/ucx   # TMP DEBUG
             action: edit
             tag: $(Build.SourceBranchName)
             isDraft: true

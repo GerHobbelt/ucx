@@ -62,12 +62,9 @@ jobs:
           set -eEx
           cd pkg-build
           echo "PWD: $(pwd)"
-          # ls -l $(Build.SourcesDirectory)     # /__w/5/we/need/to/go/deeper
           ls -l $(Build.SourcesDirectory)/contrib/configure-release-mt   || true
-
           echo 10 > debian/compat
           dpkg-buildpackage -us -uc
-
           find .. -name '*.deb'
           find .. -name '*.deb' -exec cp {} "../${AZ_ARTIFACT_NAME}" \;
           dpkg-deb -I "../${AZ_ARTIFACT_NAME}"
@@ -81,8 +78,8 @@ jobs:
         displayName: Upload artifacts
         inputs:
           githubConnection: release
-          # repositoryName: openucx/ucx
-          repositoryName: Al3xR01/ucx   # TMP DEBUG
+          repositoryName: openucx/ucx
+          # repositoryName: Al3xR01/ucx   # TMP DEBUG
           action: edit
           tag: $(Build.SourceBranchName)
           isDraft: true
