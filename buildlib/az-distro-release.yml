@@ -79,7 +79,7 @@ jobs:
         inputs:
           githubConnection: release
           repositoryName: openucx/ucx
-          # repositoryName: Al3xR01/ucx   # TMP DEBUG
+          # repositoryName: Al3xR01/ucx   # DEBUG
           action: edit
           tag: $(Build.SourceBranchName)
           isDraft: true
