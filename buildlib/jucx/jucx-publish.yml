@@ -16,7 +16,7 @@ jobs:
 
     steps:
       - checkout: self
-        clean: false  # THIS MF
+        clean: false
         fetchDepth: 100
         path: "we/need/to/go/deeper"
         # ^workaround agent issue with container in root path
@@ -56,6 +56,7 @@ jobs:
         name: publicKey
 
       - bash: |
+          set -eEx
           mkdir ${{ parameters.gpg_dir }}
           export GPG_TTY=`tty`
           chmod 700 ${{ parameters.gpg_dir }}
