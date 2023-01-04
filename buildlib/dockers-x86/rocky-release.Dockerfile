@@ -1,6 +1,7 @@
+# WIP!
 ARG CUDA_VERSION
 ARG OS_VERSION
-FROM nvidia/cuda:${CUDA_VERSION}-devel-centos${OS_VERSION}
+FROM nvidia/cuda:${CUDA_VERSION}-devel-rockylinux${OS_VERSION}
 
 RUN yum install -y \
     autoconf \
@@ -26,6 +27,7 @@ RUN yum install -y \
     ethtool \
     environment-modules \
     valgrind-devel \
+    sudo \
     && yum clean all
 
 # MOFED

@@ -1,0 +1,63 @@
+parameters:
+  temp_cfg: $(System.DefaultWorkingDirectory)/bindings/java/src/main/native/build-java/tmp-settings.xml
+  gpg_dir: $(System.DefaultWorkingDirectory)/bindings/java/src/main/native/build-java/gpg
+  name:
+  container:  
+  demands: []
+
+jobs:
+  - job: jucx_build_${{ parameters.name }}
+    displayName: JUCX build ${{ parameters.name }}
+
+    # we need to use lowest version for compatibility
+    container: ${{ parameters.container }}    
+    pool:
+      name: MLNX
+      demands: ${{ parameters.demands }}
+
+    steps:
+      - checkout: self
+        clean: true
+        fetchDepth: 100
+        path: "we/need/to/go/deeper"
+        # ^workaround agent issue with container in root path
+
+      - bash: |
+          set -eEx
+          gcc --version
+          ./autogen.sh
+          ./contrib/configure-release --with-java
+        displayName: Configure
+
+      - bash: |
+          set -eEx
+          make -s -j`nproc`
+          mv $(Build.Repository.LocalPath)/bindings/java/resources/libjucx.so \
+             $(Build.Repository.LocalPath)/bindings/java/resources/libjucx_${{ parameters.name }}.so
+        displayName: Build ucx
+
+      ##  EACCES: permission denied, mkdir '/__w/11/a'
+      # - task: CopyFiles@2
+      #   inputs:
+      #     sourceFolder: '$(Build.Repository.LocalPath)'
+      #     contents: |
+      #       bindings/java/resources/libjucx_${{ parameters.name }}.so
+      #     targetFolder: '$(Build.ArtifactStagingDirectory)'
+
+      - bash: |
+          # set -eEx  # AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA!!!!!!!!!!!!!!!!!!!!!
+          sudo mkdir -p $(Build.ArtifactStagingDirectory)
+          sudo cp $(Build.Repository.LocalPath)/bindings/java/resources/libjucx_${{ parameters.name }}.so \
+                  $(Build.ArtifactStagingDirectory) # /__w/5/a
+          ls -l $(Build.ArtifactStagingDirectory)     # TMP DEBUG
+          echo $Build.ArtifactStagingDirectory     # TMP DEBUG
+          echo $BUILD_ARTIFACTSTAGINGDIRECTORY     # TMP DEBUG
+          echo $(System.DefaultWorkingDirectory)    # TMP DEBUG
+          ls -l $(Build.DefaultWorkingDirectory)     # TMP DEBUG
+        displayName: Workaround for CopyFiles task
+
+      - task: PublishBuildArtifacts@1
+        inputs:
+          pathToPublish: '$(Build.ArtifactStagingDirectory)'  # /scrap/azure/agent-01/AZP_WORKSPACE/5/a
+          artifactName: libjucx_${{ parameters.name }}.so
+        displayName: Midterm artifact push
