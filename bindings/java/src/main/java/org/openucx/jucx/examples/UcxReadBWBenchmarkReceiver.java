@@ -42,14 +42,6 @@ public class UcxReadBWBenchmarkReceiver extends UcxBenchmark {
             .setConnectionRequest(connRequest.get())
             .setPeerErrorHandlingMode());
 
-        // Temporary workaround until new connection establishment protocol in UCX.
-        for (int i = 0; i < 10; i++) {
-            worker.progress();
-            try {
-                Thread.sleep(10);
-            } catch (Exception ignored) { }
-        }
-
         ByteBuffer recvBuffer = ByteBuffer.allocateDirect(4096);
         UcpRequest recvRequest = worker.recvTaggedNonBlocking(recvBuffer, null);
 
@@ -76,9 +68,9 @@ public class UcxReadBWBenchmarkReceiver extends UcxBenchmark {
         for (int i = 0; i < numIterations; i++) {
             final int iterNum = i;
             UcpRequest getRequest = endpoint.getNonBlocking(remoteAddress, remoteKey,
-                recvMemory.getAddress(), totalSize,
+                recvMemory.getAddress(), remoteSize,
                 new UcxCallback() {
-                    long startTime = System.nanoTime();
+                    final long startTime = System.nanoTime();
 
                     @Override
                     public void onSuccess(UcpRequest request) {
@@ -94,12 +86,6 @@ public class UcxReadBWBenchmarkReceiver extends UcxBenchmark {
             // To make sure we receive correct data each time to compare hashCodes
             data.put(0, (byte)1);
         }
-
-        ByteBuffer sendBuffer = ByteBuffer.allocateDirect(100);
-        sendBuffer.asCharBuffer().put("DONE");
-        
-        UcpRequest sent = endpoint.sendTaggedNonBlocking(sendBuffer, null);
-        worker.progressRequest(sent);
 
         UcpRequest closeRequest = endpoint.closeNonBlockingFlush();
         worker.progressRequest(closeRequest);

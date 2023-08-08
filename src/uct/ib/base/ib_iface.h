@@ -16,6 +16,8 @@
 #include <ucs/sys/string.h>
 #include <ucs/sys/math.h>
 #include <ucs/datastruct/mpool.inl>
+#include <ucs/datastruct/string_buffer.h>
+
 
 #define UCT_IB_MAX_IOV                     8UL
 #define UCT_IB_IFACE_NULL_RES_DOMAIN_KEY   0u
@@ -24,6 +26,7 @@
 #define UCT_IB_ADDRESS_INVALID_PATH_MTU    ((enum ibv_mtu)0)
 #define UCT_IB_ADDRESS_INVALID_PKEY        0
 #define UCT_IB_ADDRESS_DEFAULT_PKEY        0xffff
+#define UCT_IB_SL_NUM                      16
 
 /* Forward declarations */
 typedef struct uct_ib_iface_config   uct_ib_iface_config_t;
@@ -136,8 +139,8 @@ struct uct_ib_iface_config {
     /* Force global routing */
     int                     is_global;
 
-    /* IB SL to use */
-    unsigned                sl;
+    /* IB SL to use (default: AUTO) */
+    unsigned long           sl;
 
     /* IB Traffic Class to use */
     unsigned long           traffic_class;
@@ -226,7 +229,6 @@ struct uct_ib_iface_ops {
     uct_ib_iface_arm_cq_func_t         arm_cq;
     uct_ib_iface_event_cq_func_t       event_cq;
     uct_ib_iface_handle_failure_func_t handle_failure;
-    uct_ib_iface_set_ep_failed_func_t  set_ep_failed;
 };
 
 
@@ -529,6 +531,8 @@ ucs_status_t uct_ib_iface_create_qp(uct_ib_iface_t *iface,
 void uct_ib_iface_fill_attr(uct_ib_iface_t *iface,
                             uct_ib_qp_attr_t *attr);
 
+uint8_t uct_ib_iface_config_select_sl(const uct_ib_iface_config_t *ib_config);
+
 
 #define UCT_IB_IFACE_FMT \
     "%s:%d"
@@ -596,6 +600,21 @@ static UCS_F_ALWAYS_INLINE void
 uct_ib_fence_info_init(uct_ib_fence_info_t* fence)
 {
     fence->fence_beat = 0;
+}
+
+static UCS_F_ALWAYS_INLINE
+ucs_log_level_t uct_ib_iface_failure_log_level(uct_ib_iface_t *ib_iface,
+                                               ucs_status_t err_handler_status,
+                                               ucs_status_t status)
+{
+    if (err_handler_status != UCS_OK) {
+        return UCS_LOG_LEVEL_FATAL;
+    } else if ((status == UCS_ERR_ENDPOINT_TIMEOUT) ||
+               (status == UCS_ERR_CONNECTION_RESET)) {
+        return ib_iface->super.config.failure_level;
+    } else {
+        return UCS_LOG_LEVEL_ERROR;
+    }
 }
 
 #endif

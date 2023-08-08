@@ -4,6 +4,7 @@
 # Copyright (C) The University of Tennessee and the University of Tennessee Research Foundation. 2016. ALL RIGHTS RESERVED.
 # Copyright (C) Los Alamos National Security, LLC. 2018 ALL RIGHTS RESERVED.
 # Copyright (C) Advanced Micro Devices, Inc. 2019. ALL RIGHTS RESERVED.
+# Copyright (C) ARM Ltd. 2020.  ALL RIGHTS RESERVED.
 #
 # See file LICENSE for terms.
 #
@@ -146,6 +147,7 @@ gtest_SOURCES = \
 	ucs/test_algorithm.cc \
 	ucs/test_arbiter.cc \
 	ucs/test_async.cc \
+	ucs/test_bitmap.cc \
 	ucs/test_callbackq.cc \
 	ucs/test_class.cc \
 	ucs/test_config.cc \
@@ -255,6 +257,7 @@ noinst_HEADERS = \
 	uct/uct_p2p_test.h \
 	uct/uct_test.h \
 	uct/test_md.h \
+	uct/test_peer_failure.h \
 	\
 	ucp/test_ucp_memheap.h \
 	ucp/test_ucp_tag.h \

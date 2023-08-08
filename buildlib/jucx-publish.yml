@@ -5,22 +5,23 @@ parameters:
 
 jobs:
   - job: jucx_release
-
-    container: centos7
-
+    condition: eq(stageDependencies.Check_Commit.Check.outputs['Commit.Launch'], 'Yes')
+    # we need to use lowest version for compatible
+    container: centos7_cuda10_1
+    pool:
+      name: MLNX
+      demands:
+      - ucx_docker -equals yes
     steps:
       - checkout: self
+        fetchDepth: 100
         clean: true
 
       - bash: |
-          set -eE
+          set -eEx
           gcc --version
           ./autogen.sh
           ./contrib/configure-release --with-java
-        displayName: Configure
-
-      - bash: |
-          set -eE
           make -s -j`nproc`
         displayName: Build ucx
 

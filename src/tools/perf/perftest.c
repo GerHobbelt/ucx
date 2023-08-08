@@ -40,7 +40,7 @@
 #define MAX_BATCH_FILES         32
 #define MAX_CPUS                1024
 #define TL_RESOURCE_NAME_NONE   "<none>"
-#define TEST_PARAMS_ARGS        "t:n:s:W:O:w:D:i:H:oSCqM:r:T:d:x:A:BUm:"
+#define TEST_PARAMS_ARGS        "t:n:s:W:O:w:D:i:H:oSCIqM:r:T:d:x:A:BUm:"
 #define TEST_ID_UNDEFINED       -1
 
 enum {
@@ -350,7 +350,7 @@ static void print_test_name(struct perftest_context *ctx)
     unsigned i, pos;
 
     if (!(ctx->flags & TEST_FLAG_PRINT_CSV) && (ctx->num_batch_files > 0)) {
-        strcpy(buf, "+--------------+---------+---------+---------+----------+----------+-----------+-----------+");
+        strcpy(buf, "+--------------+--------------+---------+---------+---------+----------+----------+-----------+-----------+");
 
         pos = 1;
         for (i = 0; i < ctx->num_batch_files; ++i) {
@@ -474,6 +474,7 @@ static void usage(const struct perftest_context *ctx, const char *program)
     printf("     -r <mode>      receive mode for stream tests (recv)\n");
     printf("                        recv       : Use ucp_stream_recv_nb\n");
     printf("                        recv_data  : Use ucp_stream_recv_data_nb\n");
+    printf("     -I             create context with wakeup feature enabled\n");
     printf("\n");
     printf("   NOTE: When running UCP tests, transport and device should be specified by\n");
     printf("         environment variables: UCX_TLS and UCX_[SELF|SHM|NET]_DEVICES.\n");
@@ -705,6 +706,9 @@ static ucs_status_t parse_test_params(perftest_params_t *params, char opt,
         return UCS_OK;
     case 'U':
         params->super.flags |= UCX_PERF_TEST_FLAG_TAG_UNEXP_PROBE;
+        return UCS_OK;
+    case 'I':
+        params->super.flags |= UCX_PERF_TEST_FLAG_WAKEUP;
         return UCS_OK;
     case 'M':
         if (!strcmp(opt_arg, "single")) {
@@ -1429,8 +1433,6 @@ static ucx_perf_rte_t ext_rte = {
 
 static ucs_status_t setup_mpi_rte(struct perftest_context *ctx)
 {
-    ucs_trace_func("");
-
 #if defined (HAVE_MPI)
     static ucx_perf_rte_t mpi_rte = {
         .group_size    = mpi_rte_group_size,
@@ -1443,6 +1445,8 @@ static ucs_status_t setup_mpi_rte(struct perftest_context *ctx)
     };
 
     int size, rank;
+
+    ucs_trace_func("");
 
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     if (size != 2) {
@@ -1459,6 +1463,8 @@ static ucs_status_t setup_mpi_rte(struct perftest_context *ctx)
     ctx->params.super.rte        = &mpi_rte;
     ctx->params.super.report_arg = ctx;
 #elif defined (HAVE_RTE)
+    ucs_trace_func("");
+    
     ctx->params.rte_group         = NULL;
     ctx->params.rte               = &mpi_rte;
     ctx->params.report_arg        = ctx;

@@ -12,7 +12,49 @@ extern "C" {
 }
 
 class test_string : public ucs::test {
+protected:
+    void check_mask_str(uint64_t mask, const std::string &exp_str) const {
+        ucs_string_buffer_t mask_str;
+        ucs_string_buffer_init(&mask_str);
+        EXPECT_EQ(exp_str,
+                  static_cast<std::string>(
+                      ucs_mask_str(mask, &mask_str)));
+        ucs_string_buffer_cleanup(&mask_str);
+    }
 };
+
+UCS_TEST_F(test_string, count_char) {
+    static const char *str1 = "/foo";
+    static const char *str2 = "/foo/bar";
+    size_t count;
+
+    count = ucs_string_count_char(str1, '/');
+    EXPECT_EQ(1, count);
+
+    count = ucs_string_count_char((const char*)UCS_PTR_BYTE_OFFSET(str1, 1),
+                                  '/');
+    EXPECT_EQ(0, count);
+
+    count = ucs_string_count_char(str2, '/');
+    EXPECT_EQ(2, count);
+
+    count = ucs_string_count_char((const char*)UCS_PTR_BYTE_OFFSET(str2, 1),
+                                  '/');
+    EXPECT_EQ(1, count);
+}
+
+UCS_TEST_F(test_string, common_prefix_len) {
+    static const char *str1 = "/foo";
+    static const char *str2 = "/foobar";
+    static const char *str3 = "foo/bar";
+    size_t common_length;
+
+    common_length = ucs_string_common_prefix_len(str1, str2);
+    EXPECT_EQ(4, common_length);
+
+    common_length = ucs_string_common_prefix_len(str1, str3);
+    EXPECT_EQ(0, common_length);
+}
 
 UCS_TEST_F(test_string, trim) {
     char str1[] = " foo ";
@@ -22,7 +64,41 @@ UCS_TEST_F(test_string, trim) {
     EXPECT_EQ("foo foo", std::string(ucs_strtrim(str2)));
 }
 
+UCS_TEST_F(test_string, snprintf_safe) {
+    char buf[4];
+
+    ucs_snprintf_safe(buf, sizeof(buf), "12");
+    EXPECT_EQ(std::string("12"), buf);
+
+    ucs_snprintf_safe(buf, sizeof(buf), "123");
+    EXPECT_EQ(std::string("123"), buf);
+
+    ucs_snprintf_safe(buf, sizeof(buf), "1234");
+    EXPECT_EQ(std::string("123"), buf);
+}
+
+UCS_TEST_F(test_string, mask_str) {
+    const uint64_t empty_mask = 0;
+
+    check_mask_str(empty_mask, "<none>");
+
+    uint64_t mask = empty_mask;
+    std::string exp_str;
+    for (int i = 0; i < 64; ++i) {
+        mask |= UCS_BIT(i);
+
+        if (!exp_str.empty()) {
+            exp_str += ", ";
+        }
+        exp_str     += ucs::to_string(i);
+
+        check_mask_str(mask, exp_str);
+    }
+}
+
 class test_string_buffer : public ucs::test {
+protected:
+    void test_fixed(ucs_string_buffer_t *strb, size_t capacity);
 };
 
 
@@ -76,16 +152,34 @@ UCS_TEST_F(test_string_buffer, rtrim) {
     ucs_string_buffer_cleanup(&strb);
 }
 
-UCS_TEST_F(test_string_buffer, fixed) {
+void test_string_buffer::test_fixed(ucs_string_buffer_t *strb, size_t capacity)
+{
+    ucs_string_buffer_appendf(strb, "%s", "im");
+    ucs_string_buffer_appendf(strb, "%s", "mrmeeseeks");
+    ucs_string_buffer_appendf(strb, "%s", "lookatme");
+
+    EXPECT_LE(ucs_string_buffer_length(strb), capacity - 1);
+    EXPECT_EQ(std::string("immrmeeseeksloo"), ucs_string_buffer_cstr(strb));
+}
+
+UCS_TEST_F(test_string_buffer, fixed_static) {
     char buf[17];
-    UCS_STRING_BUFFER_FIXED(strb, buf);
+    UCS_STRING_BUFFER_STATIC(strb, buf);
+    test_fixed(&strb, sizeof(buf));
+}
 
-    ucs_string_buffer_appendf(&strb, "%s", "im");
-    ucs_string_buffer_appendf(&strb, "%s", "mrmeeseeks");
-    ucs_string_buffer_appendf(&strb, "%s", "lookatme");
+UCS_TEST_F(test_string_buffer, fixed_init) {
+    ucs_string_buffer_t strb;
+    char buf[17];
 
-    EXPECT_LE(ucs_string_buffer_length(&strb), sizeof(buf) - 1);
-    EXPECT_EQ(std::string("immrmeeseeksloo"), ucs_string_buffer_cstr(&strb));
+    ucs_string_buffer_init_fixed(&strb, buf, sizeof(buf));
+    test_fixed(&strb, sizeof(buf));
+}
+
+UCS_TEST_F(test_string_buffer, fixed_onstack) {
+    const size_t num_elems = 17;
+    UCS_STRING_BUFFER_ONSTACK(strb, num_elems);
+    test_fixed(&strb, num_elems);
 }
 
 class test_string_set : public ucs::test {

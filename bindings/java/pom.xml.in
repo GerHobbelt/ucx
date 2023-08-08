@@ -58,6 +58,9 @@
         <activation>
           <jdk>1.8</jdk>
         </activation>
+	<properties>
+          <javadocExecutable>${java.home}/../bin/javadoc</javadocExecutable>
+        </properties>
         <build>
           <plugins>
             <plugin>
@@ -73,8 +76,11 @@
       <profile>
         <id>jdk9</id>
         <activation>
-          <jdk>[1.9,)</jdk>
+          <jdk>1.9</jdk>
         </activation>
+	<properties>
+          <javadocExecutable>${java.home}/../bin/javadoc</javadocExecutable>
+        </properties>
         <build>
           <plugins>
             <plugin>
@@ -86,6 +92,32 @@
           </plugins>
         </build>
       </profile>
+      <profile>
+        <id>jdk10+</id>
+        <activation>
+          <jdk>[1.10,)</jdk>
+        </activation>
+        <properties>
+          <javadocExecutable>${java.home}/bin/javadoc</javadocExecutable>
+        </properties>
+        <build>
+          <plugins>
+            <plugin>
+              <artifactId>maven-compiler-plugin</artifactId>
+              <configuration>
+		<source>1.9</source>
+                <target>1.9</target>
+                <compilerArgs>
+                  <arg>-h</arg>
+                  <arg>${native.dir}</arg>
+                  <arg>--add-exports</arg><arg>java.base/sun.nio.ch=ALL-UNNAMED</arg>
+                </compilerArgs>
+              </configuration>
+            </plugin>
+          </plugins>
+        </build>
+      </profile>
+
     </profiles>
 
   <issueManagement>
@@ -361,7 +393,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-javadoc-plugin</artifactId>
-        <version>3.0.1</version>
+        <version>3.2.0</version>
         <configuration>
           <quiet>true</quiet>
           <doclint>all,-missing</doclint>

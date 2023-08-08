@@ -148,16 +148,17 @@ ucs_status_t uct_rc_verbs_ep_flush(uct_ep_h tl_ep, unsigned flags,
 
 ucs_status_t uct_rc_verbs_ep_fence(uct_ep_h tl_ep, unsigned flags);
 
+void uct_rc_verbs_ep_post_check(uct_ep_h tl_ep);
+
 ucs_status_t uct_rc_verbs_ep_fc_ctrl(uct_ep_t *tl_ep, unsigned op,
                                      uct_rc_pending_req_t *req);
-
-ucs_status_t uct_rc_verbs_ep_handle_failure(uct_rc_verbs_ep_t *ep,
-                                            ucs_status_t status);
 
 ucs_status_t uct_rc_verbs_ep_get_address(uct_ep_h tl_ep, uct_ep_addr_t *addr);
 
 ucs_status_t uct_rc_verbs_ep_connect_to_ep(uct_ep_h tl_ep,
                                            const uct_device_addr_t *dev_addr,
                                            const uct_ep_addr_t *ep_addr);
+
+void uct_rc_verbs_ep_cleanup_qp(uct_ib_async_event_wait_t *wait_ctx);
 
 #endif

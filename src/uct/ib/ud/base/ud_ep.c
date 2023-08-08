@@ -254,8 +254,9 @@ static unsigned uct_ud_ep_deferred_timeout_handler(void *arg)
 
     uct_ud_ep_purge(ep, UCS_ERR_ENDPOINT_TIMEOUT);
 
-    status = iface->super.ops->set_ep_failed(&iface->super, &ep->super.super,
-                                             UCS_ERR_ENDPOINT_TIMEOUT);
+    status = uct_iface_handle_ep_err(&iface->super.super.super,
+                                     &ep->super.super,
+                                     UCS_ERR_ENDPOINT_TIMEOUT);
     if (status != UCS_OK) {
         ucs_fatal("UD endpoint %p to "UCT_UD_EP_PEER_NAME_FMT": "
                   "unhandled timeout error",
@@ -1286,7 +1287,9 @@ static void uct_ud_ep_send_ack(uct_ud_iface_t *iface, uct_ud_ep_t *ep)
     skb->neth->packet_type = ep->dest_ep_id;
     if (uct_ud_ep_ctl_op_check(ep, UCT_UD_EP_OP_ACK_REQ)) {
         skb->neth->packet_type |= UCT_UD_PACKET_FLAG_ACK_REQ;
-        ctl_flags              |= UCT_UD_IFACE_SEND_CTL_FLAG_SOLICITED;
+        if (ep->tx.tick >= iface->config.min_poke_time) {
+            ctl_flags |= UCT_UD_IFACE_SEND_CTL_FLAG_SOLICITED;
+        }
     }
 
     if (uct_ud_ep_ctl_op_check(ep, UCT_UD_EP_OP_NACK)) {

@@ -86,7 +86,7 @@ public class UcpListenerTest  extends UcxTest {
     }
 
     @Test
-    public void testConnectionHandler() {
+    public void testConnectionHandler() throws Exception {
         UcpContext context1 = new UcpContext(new UcpParams().requestStreamFeature()
             .requestRmaFeature());
         UcpContext context2 = new UcpContext(new UcpParams().requestStreamFeature()
@@ -113,15 +113,33 @@ public class UcpListenerTest  extends UcxTest {
         // Create endpoint from another worker from pool.
         UcpEndpoint serverToClient = serverWorker2.newEndpoint(
             new UcpEndpointParams().setConnectionRequest(conRequest.get()));
-        
-        // Temporary workaround until new connection establishment protocol in UCX.
+
+        // Test connection handler persists
         for (int i = 0; i < 10; i++) {
-            serverWorker1.progress();
-            serverWorker2.progress();
-            clientWorker.progress();
-            try {
-                Thread.sleep(10);
-            } catch (Exception ignored) { }
+            conRequest.set(null);
+            UcpEndpoint tmpEp = clientWorker.newEndpoint(new UcpEndpointParams()
+                .setSocketAddress(listener.getAddress()).setPeerErrorHandlingMode()
+                .setErrorHandler((ep, status, errorMsg) -> {
+
+                }));
+
+            while (conRequest.get() == null) {
+                serverWorker1.progress();
+                serverWorker2.progress();
+                clientWorker.progress();
+            }
+
+            UcpEndpoint tmpEp2 = serverWorker2.newEndpoint(
+                new UcpEndpointParams().setConnectionRequest(conRequest.get()));
+
+            UcpRequest close1 = tmpEp.closeNonBlockingFlush();
+            UcpRequest close2 = tmpEp2.closeNonBlockingFlush();
+
+            while (!close1.isCompleted() || !close2.isCompleted()) {
+                serverWorker1.progress();
+                serverWorker2.progress();
+                clientWorker.progress();
+            }
         }
 
         UcpRequest sent = serverToClient.sendStreamNonBlocking(
@@ -147,8 +165,16 @@ public class UcpListenerTest  extends UcxTest {
 
         assertEquals(UcpMemoryTest.MEM_SIZE, recv.getRecvSize());
 
+        UcpRequest serverClose = serverToClient.closeNonBlockingFlush();
+        UcpRequest clientClose = clientToServer.closeNonBlockingFlush();
+
+        while (!serverClose.isCompleted() || !clientClose.isCompleted()) {
+            serverWorker2.progress();
+            clientWorker.progress();
+        }
+
         Collections.addAll(resources, context2, context1, clientWorker, serverWorker1,
-            serverWorker2, listener, serverToClient, clientToServer);
+            serverWorker2, listener);
         closeResources();
     }
 }

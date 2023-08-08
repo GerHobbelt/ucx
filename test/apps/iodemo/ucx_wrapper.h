@@ -8,6 +8,7 @@
 #define IODEMO_UCX_WRAPPER_H_
 
 #include <ucp/api/ucp.h>
+#include <ucs/algorithm/crc.h>
 #include <deque>
 #include <exception>
 #include <iostream>
@@ -21,6 +22,7 @@
 /* Forward declarations */
 class UcxConnection;
 struct ucx_request;
+struct UcxAmDesc;
 
 /*
  * UCX callback for send/receive completion
@@ -49,8 +51,9 @@ public:
  */
 class UcxLog {
 public:
-    UcxLog(const char* prefix, bool enable);
+    static bool use_human_time;
 
+    UcxLog(const char* prefix, bool enable = true);
     ~UcxLog();
 
     template<typename T>
@@ -71,7 +74,7 @@ private:
  */
 class UcxContext {
 public:
-    UcxContext(size_t iomsg_size);
+    UcxContext(size_t iomsg_size, double connect_timeout, bool use_am);
 
     virtual ~UcxContext();
 
@@ -83,17 +86,28 @@ public:
 
     void progress();
 
-protected:
+    static const std::string sockaddr_str(const struct sockaddr* saddr,
+                                          size_t addrlen);
 
-    // Called when new connection is created on server side
-    virtual void dispatch_new_connection(UcxConnection *conn);
+    void destroy_connections();
+
+protected:
 
     // Called when new IO message is received
     virtual void dispatch_io_message(UcxConnection* conn, const void *buffer,
-                                     size_t length);
+                                     size_t length) = 0;
+
+    // Called when new AM message is received
+    // (note IO message can be bundled with data)
+    virtual void dispatch_am_message(UcxConnection* conn, const void *hdr,
+                                     size_t hdr_length,
+                                     const UcxAmDesc &data_desc) = 0;
 
     // Called when there is a fatal failure on the connection
-    virtual void dispatch_connection_error(UcxConnection* conn);
+    virtual void dispatch_connection_error(UcxConnection* conn) = 0;
+
+    // Called when new server connection is accepted
+    virtual void dispatch_connection_accepted(UcxConnection* conn);
 
 private:
     typedef enum {
@@ -101,6 +115,11 @@ private:
         WAIT_STATUS_FAILED,
         WAIT_STATUS_TIMED_OUT
     } wait_status_t;
+
+    typedef struct {
+        ucp_conn_request_h conn_request;
+        struct timeval     arrival_time;
+    } conn_req_t;
 
     friend class UcxConnection;
 
@@ -119,10 +138,16 @@ private:
     static void iomsg_recv_callback(void *request, ucs_status_t status,
                                     ucp_tag_recv_info *info);
 
-    static const std::string sockaddr_str(const struct sockaddr* saddr,
-                                          size_t addrlen);
+    static ucs_status_t am_recv_callback(void *arg, const void *header,
+                                         size_t header_length,
+                                         void *data, size_t length,
+                                         const ucp_am_recv_param_t *param);
 
     ucp_worker_h worker() const;
+
+    double connect_timeout() const;
+
+    int is_timeout_elapsed(struct timeval const *tv_prior, double timeout);
 
     void progress_conn_requests();
 
@@ -130,7 +155,7 @@ private:
 
     void progress_failed_connections();
 
-    wait_status_t wait_completion(ucs_status_ptr_t status_ptr,
+    wait_status_t wait_completion(ucs_status_ptr_t status_ptr, const char *title,
                                   double timeout = 1e6);
 
     void recv_io_message();
@@ -141,28 +166,31 @@ private:
 
     void handle_connection_error(UcxConnection *conn);
 
-    void destroy_connections();
-
     void destroy_listener();
 
     void destroy_worker();
 
-    typedef std::map<uint32_t, UcxConnection*> conn_map_t;
+    void set_am_handler(ucp_am_recv_callback_t cb, void *arg);
+
+    typedef std::map<uint64_t, UcxConnection*> conn_map_t;
 
     ucp_context_h                  _context;
     ucp_worker_h                   _worker;
     ucp_listener_h                 _listener;
     conn_map_t                     _conns;
+    std::deque<conn_req_t>         _conn_requests;
+    std::deque<UcxConnection *>    _failed_conns;
     ucx_request*                   _iomsg_recv_request;
     std::string                    _iomsg_buffer;
-    std::deque<ucp_conn_request_h> _conn_requests;
-    std::deque<UcxConnection *>    _failed_conns;
+    double                         _connect_timeout;
+    bool                           _use_am;
 };
 
 
 class UcxConnection {
 public:
-    UcxConnection(UcxContext& context, uint32_t conn_id);
+    public:
+    UcxConnection(UcxContext& context, uint32_t conn_id, bool use_am);
 
     ~UcxConnection();
 
@@ -179,10 +207,21 @@ public:
     bool recv_data(void *buffer, size_t length, uint32_t sn,
                    UcxCallback* callback = EmptyCallback::get());
 
+    bool send_am(const void *meta, size_t meta_length,
+                 const void *buffer, size_t length,
+                 UcxCallback* callback = EmptyCallback::get());
+
+    bool recv_am_data(void *buffer, size_t length, const UcxAmDesc &data_desc,
+                      UcxCallback* callback = EmptyCallback::get());
+
     void cancel_all();
 
-    uint32_t id() const {
+    uint64_t id() const {
         return _conn_id;
+    }
+
+    ucs_status_t ucx_status() const {
+        return _ucx_status;
     }
 
 private:
@@ -196,6 +235,12 @@ private:
                                      size_t recv_len);
 
     static void common_request_callback(void *request, ucs_status_t status);
+
+    static void common_request_callback_nbx(void *request, ucs_status_t status,
+                                            void *user_data);
+
+    static void am_data_recv_callback(void *request, ucs_status_t status,
+                                      size_t length, void *user_data);
 
     static void data_recv_callback(void *request, ucs_status_t status,
                                    ucp_tag_recv_info *info);
@@ -215,8 +260,6 @@ private:
 
     void handle_connection_error(ucs_status_t status);
 
-    void disconnect(enum ucp_ep_close_mode mode);
-
     void ep_close(enum ucp_ep_close_mode mode);
 
     bool process_request(const char *what, ucs_status_ptr_t ptr_status,
@@ -225,12 +268,15 @@ private:
     static unsigned    _num_instances;
 
     UcxContext&        _context;
-    uint32_t           _conn_id;
-    uint32_t           _remote_conn_id;
+    uint64_t           _conn_id;
+    uint64_t           _remote_conn_id;
     char               _log_prefix[MAX_LOG_PREFIX_SIZE];
     ucp_ep_h           _ep;
     void*              _close_request;
     ucs_list_link_t    _all_requests;
+    ucs_status_t       _ucx_status;
+    bool               _use_am;
+    bool               _connected;
 };
 
 #endif

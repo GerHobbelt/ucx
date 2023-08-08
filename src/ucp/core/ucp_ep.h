@@ -60,8 +60,9 @@ enum {
     UCP_EP_FLAG_CLOSE_REQ_VALID        = UCS_BIT(11),/* close protocol is started and
                                                         close_req is valid */
     UCP_EP_FLAG_ERR_HANDLER_INVOKED    = UCS_BIT(12),/* error handler was called */
-    UCP_EP_FLAG_TEMPORARY              = UCS_BIT(13),/* the temporary EP which holds
-                                                        temporary wireup configuration */
+    UCP_EP_FLAG_INTERNAL               = UCS_BIT(13),/* the internal EP which holds
+                                                        temporary wireup configuration or
+                                                        mem-type EP */
     UCP_EP_FLAG_INDIRECT_ID            = UCS_BIT(14),/* protocols on this endpoint will send
                                                         indirect endpoint id instead of pointer,
                                                         can be replaced with looking at local ID */
@@ -102,13 +103,24 @@ enum {
                                                            client side */
     UCP_EP_INIT_CM_WIREUP_SERVER       = UCS_BIT(3),  /**< Endpoint wireup protocol is based on CM,
                                                            server side */
-    UCP_EP_INIT_ERR_MODE_PEER_FAILURE  = UCS_BIT(4)   /**< Endpoint requires an
+    UCP_EP_INIT_ERR_MODE_PEER_FAILURE  = UCS_BIT(4),  /**< Endpoint requires an
                                                            @ref UCP_ERR_HANDLING_MODE_PEER */
+    UCP_EP_INIT_CM_PHASE               = UCS_BIT(5)   /**< Endpoint connection to a peer is on
+                                                           CM phase */
 };
 
 
 #define UCP_EP_STAT_TAG_OP(_ep, _op) \
     UCS_STATS_UPDATE_COUNTER((_ep)->stats, UCP_EP_STAT_TAG_TX_##_op, 1);
+
+
+typedef struct ucp_ep_config_key_lane {
+    ucp_rsc_index_t      rsc_index; /* Resource index */
+    ucp_md_index_t       dst_md_index; /* Destination memory domain index */
+    uint8_t              path_index; /* Device path index */
+    ucp_lane_type_mask_t lane_types; /* Which types of operations this lane
+                                        was selected for */
+} ucp_ep_config_key_lane_t;
 
 
 /*
@@ -119,15 +131,7 @@ enum {
 struct ucp_ep_config_key {
 
     ucp_lane_index_t         num_lanes;       /* Number of active lanes */
-
-    struct {
-        ucp_rsc_index_t      rsc_index;       /* Resource index */
-        ucp_rsc_index_t      dst_rsc_index;   /* Destination resource index */
-        ucp_md_index_t       dst_md_index;    /* Destination memory domain index */
-        uint8_t              path_index;      /* Device path index */
-        ucp_lane_type_mask_t lane_types;      /* Which types of operations this lane
-                                                 was selected for */
-    } lanes[UCP_MAX_LANES];
+    ucp_ep_config_key_lane_t lanes[UCP_MAX_LANES]; /* Active lanes */
 
     ucp_lane_index_t         am_lane;         /* Lane for AM (can be NULL) */
     ucp_lane_index_t         tag_lane;        /* Lane for tag matching offload (can be NULL) */
@@ -332,6 +336,9 @@ struct ucp_ep_config {
         /* Protocols used for am operations */
         const ucp_request_send_proto_t   *proto;
         const ucp_request_send_proto_t   *reply_proto;
+
+        /* Maximal size for eager short */
+        ssize_t                          max_eager_short;
     } am_u;
 
     /* Protocol selection data */
@@ -383,39 +390,38 @@ typedef struct {
 
 
 /**
- * Local and remote EP IDs
+ * Endpoint extension for control data path
  */
 typedef struct {
-    ucs_ptr_map_key_t             local;         /* Local EP ID */
-    ucs_ptr_map_key_t             remote;        /* Remote EP ID */
-} ucp_ep_ids_t;
+    ucs_ptr_map_key_t             local_ep_id;   /* Local EP ID */
+    ucs_ptr_map_key_t             remote_ep_id;  /* Remote EP ID */
+    ucp_err_handler_cb_t          err_cb;        /* Error handler */
+    union {
+        ucp_listener_h            listener;      /* Listener that may be associated with ep */
+        ucp_ep_close_proto_req_t  close_req;     /* Close protocol request */
+    };
+} ucp_ep_ext_control_t;
 
 
-/*
+/**
  * Endpoint extension for generic non fast-path data
  */
 typedef struct {
-    ucp_ep_ids_t                  *ids;          /* Local and remote IDS, TODO:
-                                                    remove indirect pointer after
-                                                    stride allocator improvement */
     void                          *user_data;    /* User data associated with ep */
     ucs_list_link_t               ep_list;       /* List entry in worker's all eps list */
-    ucp_err_handler_cb_t          err_cb;        /* Error handler */
-
     /* Endpoint match context and remote completion status are mutually exclusive,
      * since remote completions are counted only after the endpoint is already
      * matched to a remote peer.
      */
     union {
         ucp_ep_match_elem_t       ep_match;      /* Matching with remote endpoints */
-        ucp_ep_flush_state_t      flush_state;   /* Remove completion status */
-        ucp_listener_h            listener;      /* Listener that may be associated with ep */
-        ucp_ep_close_proto_req_t  close_req;     /* Close protocol request */
+        ucp_ep_flush_state_t      flush_state;   /* Remote completion status */
     };
+    ucp_ep_ext_control_t          *control_ext;  /* Control data path extension */
 } ucp_ep_ext_gen_t;
 
 
-/*
+/**
  * Endpoint extension for specific protocols
  */
 typedef struct {
@@ -504,6 +510,8 @@ ucs_status_t ucp_worker_create_ep(ucp_worker_h worker, unsigned ep_init_flags,
 
 void ucp_ep_delete(ucp_ep_h ep);
 
+void ucp_ep_release_id(ucp_ep_h ep);
+
 ucs_status_t ucp_ep_init_create_wireup(ucp_ep_h ep, unsigned ep_init_flags,
                                        ucp_wireup_ep_t **wireup_ep);
 
@@ -517,8 +525,7 @@ ucs_status_t ucp_ep_create_server_accept(ucp_worker_h worker,
                                          const ucp_conn_request_h conn_request,
                                          ucp_ep_h *ep_p);
 
-ucs_status_ptr_t ucp_ep_flush_internal(ucp_ep_h ep, unsigned uct_flags,
-                                       unsigned req_flags,
+ucs_status_ptr_t ucp_ep_flush_internal(ucp_ep_h ep, unsigned req_flags,
                                        const ucp_request_param_t *param,
                                        ucp_request_t *worker_req,
                                        ucp_request_callback_t flushed_cb,
@@ -547,14 +554,16 @@ ucs_status_t ucp_ep_config_init(ucp_worker_h worker, ucp_ep_config_t *config,
 
 void ucp_ep_config_cleanup(ucp_worker_h worker, ucp_ep_config_t *config);
 
-void ucp_ep_config_lanes_intersect(const ucp_ep_config_key_t *key1,
-                                   const ucp_ep_config_key_t *key2,
-                                   ucp_lane_index_t *lane_map);
+int ucp_ep_config_lane_is_peer_match(const ucp_ep_config_key_t *key1,
+                                     ucp_lane_index_t lane1,
+                                     const ucp_ep_config_key_t *key2,
+                                     ucp_lane_index_t lane2);
 
-ucp_lane_index_t
-ucp_ep_config_find_lane_index(const ucp_ep_config_key_t *key,
-                              ucp_lane_index_t lane,
-                              const ucp_lane_index_t *lane_indexes);
+void ucp_ep_config_lanes_intersect(const ucp_ep_config_key_t *key1,
+                                   const ucp_rsc_index_t *dst_rsc_indices1,
+                                   const ucp_ep_config_key_t *key2,
+                                   const ucp_rsc_index_t *dst_rsc_indices2,
+                                   ucp_lane_index_t *lane_map);
 
 int ucp_ep_config_is_equal(const ucp_ep_config_key_t *key1,
                            const ucp_ep_config_key_t *key2);
@@ -590,6 +599,8 @@ int ucp_ep_config_test_rndv_support(const ucp_ep_config_t *config);
 void ucp_ep_flush_completion(uct_completion_t *self);
 
 void ucp_ep_flush_request_ff(ucp_request_t *req, ucs_status_t status);
+
+void ucp_ep_discard_lanes(ucp_ep_h ucp_ep, ucs_status_t status);
 
 /**
  * @brief Do keepalive operation.

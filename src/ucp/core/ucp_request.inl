@@ -30,7 +30,8 @@
     (((_flags) & UCP_REQUEST_FLAG_EXPECTED)        ? 'e' : '-'), \
     (((_flags) & UCP_REQUEST_FLAG_LOCAL_COMPLETED) ? 'L' : '-'), \
     (((_flags) & UCP_REQUEST_FLAG_CALLBACK)        ? 'c' : '-'), \
-    (((_flags) & UCP_REQUEST_FLAG_RECV)            ? 'r' : '-'), \
+    (((_flags) & (UCP_REQUEST_FLAG_RECV_TAG | \
+                  UCP_REQUEST_FLAG_RECV_AM))       ? 'r' : '-'), \
     (((_flags) & UCP_REQUEST_FLAG_SYNC)            ? 's' : '-')
 
 #define UCP_RECV_DESC_FMT \
@@ -63,12 +64,14 @@
 
 #define ucp_request_complete(_req, _cb, _status, ...) \
     { \
+        /* NOTE: external request can't have RELEASE flag and we */ \
+        /* will never put it into mpool */ \
+        uint32_t _flags = ((_req)->flags |= UCP_REQUEST_FLAG_COMPLETED); \
         (_req)->status = (_status); \
         if (ucs_likely((_req)->flags & UCP_REQUEST_FLAG_CALLBACK)) { \
             (_req)->_cb((_req) + 1, (_status), ## __VA_ARGS__); \
         } \
-        if (ucs_unlikely(((_req)->flags  |= UCP_REQUEST_FLAG_COMPLETED) & \
-                         UCP_REQUEST_FLAG_RELEASED)) { \
+        if (ucs_unlikely(_flags & UCP_REQUEST_FLAG_RELEASED)) { \
             ucp_request_put(_req); \
         } \
     }
@@ -149,6 +152,7 @@ static UCS_F_ALWAYS_INLINE void
 ucp_request_put(ucp_request_t *req)
 {
     ucs_trace_req("put request %p", req);
+    ucs_assert(!(req->flags & UCP_REQUEST_FLAG_IN_PTR_MAP));
     UCS_PROFILE_REQUEST_FREE(req);
     ucs_mpool_put_inline(req);
 }
@@ -646,7 +650,13 @@ ucp_request_complete_am_recv(ucp_request_t *req, ucs_status_t status)
                   req, req + 1, UCP_REQUEST_FLAGS_ARG(req->flags),
                   req->recv.length, ucs_status_string(status));
     UCS_PROFILE_REQUEST_EVENT(req, "complete_recv", status);
-    ucp_recv_desc_release(req->recv.am.desc);
+
+    if (req->recv.am.desc->flags & UCP_RECV_DESC_FLAG_RNDV) {
+        ucp_recv_desc_release(req->recv.am.desc);
+    } else {
+        req->recv.am.desc->flags |= UCP_RECV_DESC_FLAG_COMPLETED;
+    }
+
     ucp_request_complete(req, recv.am.cb, status, req->recv.length,
                          req->user_data);
 }
@@ -654,7 +664,7 @@ ucp_request_complete_am_recv(ucp_request_t *req, ucs_status_t status)
 static UCS_F_ALWAYS_INLINE ucs_status_t
 ucp_request_process_recv_data(ucp_request_t *req, const void *data,
                               size_t length, size_t offset, int is_zcopy,
-                              int is_am)
+                              int is_am, ucs_ptr_map_key_t req_id)
 {
     ucs_status_t status;
     int last;
@@ -681,6 +691,10 @@ ucp_request_process_recv_data(ucp_request_t *req, const void *data,
         ucp_request_recv_buffer_dereg(req);
     }
 
+    if (req_id != UCP_REQUEST_ID_INVALID) {
+        ucp_worker_del_request_id(req->recv.worker, req, req_id);
+    }
+
     if (is_am) {
         ucp_request_complete_am_recv(req, status);
     } else {
@@ -698,21 +712,21 @@ ucp_send_request_get_am_bw_lane(ucp_request_t *req)
     ucp_lane_index_t lane;
 
     lane = ucp_ep_config(req->send.ep)->
-           key.am_bw_lanes[req->send.msg_proto.am_bw_index];
-    ucs_assertv(lane != UCP_NULL_LANE, "req->send.msg_proto.am_bw_index=%d",
-                req->send.msg_proto.am_bw_index);
+           key.am_bw_lanes[req->send.am_bw_index];
+    ucs_assertv(lane != UCP_NULL_LANE, "req->send.am_bw_index=%d",
+                req->send.am_bw_index);
     return lane;
 }
 
 static UCS_F_ALWAYS_INLINE void
 ucp_send_request_next_am_bw_lane(ucp_request_t *req)
 {
-    ucp_lane_index_t am_bw_index = ++req->send.msg_proto.am_bw_index;
+    ucp_lane_index_t am_bw_index = ++req->send.am_bw_index;
     ucp_ep_config_t *config      = ucp_ep_config(req->send.ep);
 
     if ((am_bw_index >= UCP_MAX_LANES) ||
         (config->key.am_bw_lanes[am_bw_index] == UCP_NULL_LANE)) {
-        req->send.msg_proto.am_bw_index = 0;
+        req->send.am_bw_index = 0;
     }
 }
 
@@ -756,6 +770,12 @@ ucp_send_request_get_id(ucp_request_t *req)
 }
 
 static UCS_F_ALWAYS_INLINE void
+ucp_send_request_set_id(ucp_request_t *req)
+{
+    req->send.msg_proto.sreq_id = ucp_send_request_get_id(req);
+}
+
+static UCS_F_ALWAYS_INLINE void
 ucp_request_param_rndv_thresh(ucp_request_t *req,
                               const ucp_request_param_t *param,
                               ucp_rndv_thresh_t *rma_thresh_config,
@@ -763,7 +783,7 @@ ucp_request_param_rndv_thresh(ucp_request_t *req,
                               size_t *rndv_rma_thresh, size_t *rndv_am_thresh)
 {
     if ((param->op_attr_mask & UCP_OP_ATTR_FLAG_FAST_CMPL) &&
-        ucs_likely(UCP_MEM_IS_ACCESSIBLE_FROM_CPU(req->send.mem_type))) {
+        ucs_likely(UCP_MEM_IS_HOST(req->send.mem_type))) {
         *rndv_rma_thresh = rma_thresh_config->local;
         *rndv_am_thresh  = am_thresh_config->local;
     } else {

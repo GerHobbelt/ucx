@@ -28,14 +28,15 @@ static ucs_status_t ucp_eager_short_progress(uct_pending_req_t *self)
 
     status = uct_ep_am_short(req->send.ep->uct_eps[spriv->super.lane],
                              UCP_AM_ID_EAGER_ONLY, req->send.msg_proto.tag.tag,
-                             req->send.dt_iter.type.contig.buffer,
-                             req->send.dt_iter.length);
+                             req->send.state.dt_iter.type.contig.buffer,
+                             req->send.state.dt_iter.length);
     if (ucs_unlikely(status == UCS_ERR_NO_RESOURCE)) {
         req->send.lane = spriv->super.lane; /* for pending add */
         return status;
     }
 
-    ucp_datatype_iter_cleanup(&req->send.dt_iter, UCS_BIT(UCP_DATATYPE_CONTIG));
+    ucp_datatype_iter_cleanup(&req->send.state.dt_iter,
+                              UCS_BIT(UCP_DATATYPE_CONTIG));
 
     ucs_assert(status != UCS_INPROGRESS);
     ucp_request_complete_send(req, status);
@@ -52,9 +53,10 @@ ucp_proto_eager_short_init(const ucp_proto_init_params_t *init_params)
         .super.overhead      = 0,
         .super.cfg_thresh    = UCS_MEMUNITS_AUTO,
         .super.cfg_priority  = 0,
-        .super.fragsz_offset = ucs_offsetof(uct_iface_attr_t, cap.am.max_short),
+        .super.min_frag_offs = UCP_PROTO_COMMON_OFFSET_INVALID,
+        .super.max_frag_offs = ucs_offsetof(uct_iface_attr_t, cap.am.max_short),
         .super.hdr_size      = sizeof(ucp_tag_hdr_t),
-        .super.flags         = 0,
+        .super.flags         = UCP_PROTO_COMMON_INIT_FLAG_MAX_FRAG,
         .lane_type           = UCP_LANE_TYPE_AM,
         .tl_cap_flags        = UCT_IFACE_FLAG_AM_SHORT
     };
@@ -85,9 +87,9 @@ static size_t ucp_eager_single_pack(void *dest, void *arg)
     ucp_datatype_iter_t next_iter;
     size_t packed_size;
 
-    ucs_assert(req->send.dt_iter.offset == 0);
+    ucs_assert(req->send.state.dt_iter.offset == 0);
     hdr->super.tag = req->send.msg_proto.tag.tag;
-    packed_size    = ucp_datatype_iter_next_pack(&req->send.dt_iter,
+    packed_size    = ucp_datatype_iter_next_pack(&req->send.state.dt_iter,
                                                  req->send.ep->worker,
                                                  SIZE_MAX, &next_iter, hdr + 1);
     return sizeof(*hdr) + packed_size;
@@ -117,9 +119,10 @@ ucp_proto_eager_bcopy_single_init(const ucp_proto_init_params_t *init_params)
         .super.overhead      = 5e-9,
         .super.cfg_thresh    = context->config.ext.bcopy_thresh,
         .super.cfg_priority  = 20,
-        .super.flags         = 0,
-        .super.fragsz_offset = ucs_offsetof(uct_iface_attr_t, cap.am.max_bcopy),
+        .super.min_frag_offs = UCP_PROTO_COMMON_OFFSET_INVALID,
+        .super.max_frag_offs = ucs_offsetof(uct_iface_attr_t, cap.am.max_bcopy),
         .super.hdr_size      = sizeof(ucp_tag_hdr_t),
+        .super.flags         = UCP_PROTO_COMMON_INIT_FLAG_MAX_FRAG,
         .lane_type           = UCP_LANE_TYPE_AM,
         .tl_cap_flags        = UCT_IFACE_FLAG_AM_BCOPY
     };
@@ -147,12 +150,14 @@ ucp_proto_eager_zcopy_single_init(const ucp_proto_init_params_t *init_params)
     ucp_proto_single_init_params_t params = {
         .super.super         = *init_params,
         .super.latency       = 0,
+        .super.overhead      = 0,
         .super.cfg_thresh    = context->config.ext.zcopy_thresh,
         .super.cfg_priority  = 30,
-        .super.overhead      = 0,
-        .super.fragsz_offset = ucs_offsetof(uct_iface_attr_t, cap.am.max_zcopy),
+        .super.min_frag_offs = UCP_PROTO_COMMON_OFFSET_INVALID,
+        .super.max_frag_offs = ucs_offsetof(uct_iface_attr_t, cap.am.max_zcopy),
         .super.hdr_size      = sizeof(ucp_tag_hdr_t),
-        .super.flags         = UCP_PROTO_COMMON_INIT_FLAG_SEND_ZCOPY,
+        .super.flags         = UCP_PROTO_COMMON_INIT_FLAG_SEND_ZCOPY |
+                               UCP_PROTO_COMMON_INIT_FLAG_MAX_FRAG,
         .lane_type           = UCP_LANE_TYPE_AM,
         .tl_cap_flags        = UCT_IFACE_FLAG_AM_ZCOPY
     };

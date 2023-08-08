@@ -412,6 +412,13 @@ typedef enum uct_atomic_op {
                                                        and it may also be invoked when uct_worker_progress()
                                                        is called. */
 
+        /* Keepalive */
+#define UCT_IFACE_FLAG_EP_KEEPALIVE   UCS_BIT(46) /**< Transport endpoint has built-in keepalive feature,
+                                                       which guarantees the error callback on the transport
+                                                       interface will be called if the communication
+                                                       channel with remote peer is broken, even if there
+                                                       are no outstanding send operations */
+
         /* Tag matching operations */
 #define UCT_IFACE_FLAG_TAG_EAGER_SHORT UCS_BIT(50) /**< Hardware tag matching short eager support */
 #define UCT_IFACE_FLAG_TAG_EAGER_BCOPY UCS_BIT(51) /**< Hardware tag matching bcopy eager support */
@@ -590,51 +597,54 @@ enum uct_iface_open_mode {
  */
 enum uct_iface_params_field {
     /** Enables @ref uct_iface_params_t::cpu_mask */
-    UCT_IFACE_PARAM_FIELD_CPU_MASK          = UCS_BIT(0),
+    UCT_IFACE_PARAM_FIELD_CPU_MASK           = UCS_BIT(0),
 
     /** Enables @ref uct_iface_params_t::open_mode */
-    UCT_IFACE_PARAM_FIELD_OPEN_MODE         = UCS_BIT(1),
+    UCT_IFACE_PARAM_FIELD_OPEN_MODE          = UCS_BIT(1),
 
     /** Enables @ref uct_iface_params_t_mode_device
      *  "uct_iface_params_t::mode::device" */
-    UCT_IFACE_PARAM_FIELD_DEVICE            = UCS_BIT(2),
+    UCT_IFACE_PARAM_FIELD_DEVICE             = UCS_BIT(2),
 
     /** Enables @ref uct_iface_params_t_mode_sockaddr
      *  "uct_iface_params_t::mode::sockaddr" */
-    UCT_IFACE_PARAM_FIELD_SOCKADDR          = UCS_BIT(3),
+    UCT_IFACE_PARAM_FIELD_SOCKADDR           = UCS_BIT(3),
 
     /** Enables @ref uct_iface_params_t::stats_root */
-    UCT_IFACE_PARAM_FIELD_STATS_ROOT        = UCS_BIT(4),
+    UCT_IFACE_PARAM_FIELD_STATS_ROOT         = UCS_BIT(4),
 
     /** Enables @ref uct_iface_params_t::rx_headroom */
-    UCT_IFACE_PARAM_FIELD_RX_HEADROOM       = UCS_BIT(5),
+    UCT_IFACE_PARAM_FIELD_RX_HEADROOM        = UCS_BIT(5),
 
     /** Enables @ref uct_iface_params_t::err_handler_arg */
-    UCT_IFACE_PARAM_FIELD_ERR_HANDLER_ARG   = UCS_BIT(6),
+    UCT_IFACE_PARAM_FIELD_ERR_HANDLER_ARG    = UCS_BIT(6),
 
     /** Enables @ref uct_iface_params_t::err_handler */
-    UCT_IFACE_PARAM_FIELD_ERR_HANDLER       = UCS_BIT(7),
+    UCT_IFACE_PARAM_FIELD_ERR_HANDLER        = UCS_BIT(7),
 
     /** Enables @ref uct_iface_params_t::err_handler_flags */
-    UCT_IFACE_PARAM_FIELD_ERR_HANDLER_FLAGS = UCS_BIT(8),
+    UCT_IFACE_PARAM_FIELD_ERR_HANDLER_FLAGS  = UCS_BIT(8),
 
     /** Enables @ref uct_iface_params_t::eager_arg */
-    UCT_IFACE_PARAM_FIELD_HW_TM_EAGER_ARG   = UCS_BIT(9),
+    UCT_IFACE_PARAM_FIELD_HW_TM_EAGER_ARG    = UCS_BIT(9),
 
     /** Enables @ref uct_iface_params_t::eager_cb */
-    UCT_IFACE_PARAM_FIELD_HW_TM_EAGER_CB    = UCS_BIT(10),
+    UCT_IFACE_PARAM_FIELD_HW_TM_EAGER_CB     = UCS_BIT(10),
 
     /** Enables @ref uct_iface_params_t::rndv_arg */
-    UCT_IFACE_PARAM_FIELD_HW_TM_RNDV_ARG    = UCS_BIT(11),
+    UCT_IFACE_PARAM_FIELD_HW_TM_RNDV_ARG     = UCS_BIT(11),
 
     /** Enables @ref uct_iface_params_t::rndv_cb */
-    UCT_IFACE_PARAM_FIELD_HW_TM_RNDV_CB     = UCS_BIT(12),
+    UCT_IFACE_PARAM_FIELD_HW_TM_RNDV_CB      = UCS_BIT(12),
 
     /** Enables @ref uct_iface_params_t::async_event_arg */
-    UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_ARG   = UCS_BIT(13),
+    UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_ARG    = UCS_BIT(13),
 
     /** Enables @ref uct_iface_params_t::async_event_cb */
-    UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_CB    = UCS_BIT(14)
+    UCT_IFACE_PARAM_FIELD_ASYNC_EVENT_CB     = UCS_BIT(14),
+
+    /** Enables @ref uct_iface_params_t::keepalive_interval */
+    UCT_IFACE_PARAM_FIELD_KEEPALIVE_INTERVAL = UCS_BIT(15)
 };
 
 /**
@@ -1045,6 +1055,9 @@ struct uct_iface_params {
      * read by user if the iface has @ref UCT_IFACE_FLAG_EVENT_ASYNC_CB
      * capability */
     uct_async_event_cb_t                         async_event_cb;
+
+    /* Time period between keepalive rounds */
+    ucs_time_t                                   keepalive_interval;
 };
 
 
@@ -1228,7 +1241,8 @@ struct uct_listener_params {
  *
  * This structure defines the attributes of a Memory Domain which includes
  * maximum memory that can be allocated, credentials required for accessing the memory,
- * and CPU mask indicating the proximity of CPUs.
+ * CPU mask indicating the proximity of CPUs, and bitmaps indicating the types
+ * of memory (CPU/CUDA/ROCM) that can be detected, allocated and accessed.
  */
 struct uct_md_attr {
     struct {
@@ -1238,7 +1252,7 @@ struct uct_md_attr {
         uint64_t             reg_mem_types; /**< Bitmap of memory types that Memory Domain can be registered with */
         uint64_t             detect_mem_types; /**< Bitmap of memory types that Memory Domain can detect if address belongs to it */
         uint64_t             alloc_mem_types;  /**< Bitmap of memory types that Memory Domain can allocate memory on */
-        ucs_memory_type_t    access_mem_type; /**< Memory type that Memory Domain can access */
+        uint64_t             access_mem_types; /**< Memory types that Memory Domain can access */
     } cap;
 
     ucs_linear_func_t        reg_cost;  /**< Memory registration cost estimation
@@ -1412,11 +1426,16 @@ struct uct_tag_context {
     /**
      * Tag processing is completed by the transport.
      *
-     * @param [in]  self    Pointer to relevant context structure, which was
-     *                      initially passed to @ref uct_iface_tag_recv_zcopy.
-     * @param [in]  stag    Tag from sender.
-     * @param [in]  imm     Immediate data from sender. For rendezvous, it's always 0.
-     * @param [in]  length  Completed length.
+     * @param [in]  self        Pointer to relevant context structure, which was
+     *                          initially passed to @ref uct_iface_tag_recv_zcopy.
+     * @param [in]  stag        Tag from sender.
+     * @param [in]  imm         Immediate data from sender. For rendezvous, it's always 0.
+     * @param [in]  length      Completed length.
+     * @param [in]  inline_data If non-null, points to a temporary buffer which contains
+                                the received data. In this case the received data was not
+                                placed directly in the receive buffer. This callback routine
+                                is responsible for copy-out the inline data, otherwise it is
+                                released.
      * @param [in]  status  Completion status:
      * (a)   UCS_OK - Success, data placed in provided buffer.
      * (b)   UCS_ERR_TRUNCATED - Sender's length exceed posted
@@ -1424,7 +1443,7 @@ struct uct_tag_context {
      * (c)   UCS_ERR_CANCELED - Canceled by user.
      */
      void (*completed_cb)(uct_tag_context_t *self, uct_tag_t stag, uint64_t imm,
-                          size_t length, ucs_status_t status);
+                          size_t length, void *inline_data, ucs_status_t status);
 
     /**
      * Tag was matched by a rendezvous request, which should be completed by
@@ -1436,12 +1455,23 @@ struct uct_tag_context {
      * @param [in]  header        User defined header.
      * @param [in]  header_length User defined header length in bytes.
      * @param [in]  status        Completion status.
+     * @param [in]  flags         Flags defined by UCT_TAG_RECV_CB_xx.
      */
      void (*rndv_cb)(uct_tag_context_t *self, uct_tag_t stag, const void *header,
-                     unsigned header_length, ucs_status_t status);
+                     unsigned header_length, ucs_status_t status, unsigned flags);
 
      /** A placeholder for the private data used by the transport */
      char priv[UCT_TAG_PRIV_LEN];
+};
+
+
+/**
+ * @ingroup UCT_RESOURCE
+ * @brief flags of @ref uct_tag_context.
+ */
+enum {
+    /* If set, header points to inline data, otherwise it is user buffer. */
+    UCT_TAG_RECV_CB_INLINE_DATA = UCS_BIT(0)
 };
 
 

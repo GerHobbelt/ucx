@@ -236,19 +236,31 @@ int ucs_config_sscanf_ternary(const char *buf, void *dest, const void *arg)
     if (!strcasecmp(buf, "try") || !strcasecmp(buf, "maybe")) {
         *(int*)dest = UCS_TRY;
         return 1;
-    } else {
-        return ucs_config_sscanf_bool(buf, dest, arg);
     }
+
+    return ucs_config_sscanf_bool(buf, dest, arg);
 }
 
-int ucs_config_sprintf_ternary(char *buf, size_t max,
-                               const void *src, const void *arg)
+int ucs_config_sscanf_ternary_auto(const char *buf, void *dest, const void *arg)
 {
-    if (*(int*)src == UCS_TRY) {
-        return snprintf(buf, max, "try");
-    } else {
-        return ucs_config_sprintf_bool(buf, max, src, arg);
+    if (!strcasecmp(buf, UCS_VALUE_AUTO_STR)) {
+        *(int*)dest = UCS_AUTO;
+        return 1;
     }
+
+    return ucs_config_sscanf_ternary(buf, dest, arg);
+}
+
+int ucs_config_sprintf_ternary_auto(char *buf, size_t max,
+                                    const void *src, const void *arg)
+{
+    if (*(int*)src == UCS_AUTO) {
+        return snprintf(buf, max, UCS_VALUE_AUTO_STR);
+    } else if (*(int*)src == UCS_TRY) {
+        return snprintf(buf, max, "try");
+    }
+
+    return ucs_config_sprintf_bool(buf, max, src, arg);
 }
 
 int ucs_config_sscanf_on_off(const char *buf, void *dest, const void *arg)
@@ -433,14 +445,21 @@ int ucs_config_sscanf_time(const char *buf, void *dest, const void *arg)
 int ucs_config_sprintf_time(char *buf, size_t max,
                             const void *src, const void *arg)
 {
-    snprintf(buf, max, "%.2fus", *(double*)src * UCS_USEC_PER_SEC);
-    return 1;
+    return snprintf(buf, max, "%.2fus", *(double*)src * UCS_USEC_PER_SEC);
 }
 
 int ucs_config_sscanf_time_units(const char *buf, void *dest, const void *arg)
 {
     double value;
     int ret;
+
+    if (!strcmp(buf, "inf")) {
+        *(ucs_time_t*)dest = UCS_TIME_INFINITY;
+        return 1;
+    } else if (!strcmp(buf, "auto")) {
+        *(ucs_time_t*)dest = UCS_TIME_AUTO;
+        return 1;
+    }
 
     ret = ucs_config_sscanf_time(buf, &value, arg);
     if (ret == 0) {
@@ -454,8 +473,15 @@ int ucs_config_sscanf_time_units(const char *buf, void *dest, const void *arg)
 int ucs_config_sprintf_time_units(char *buf, size_t max,
                                   const void *src, const void *arg)
 {
-    double value = ucs_time_to_sec(*(ucs_time_t*)src);
+    double value;
 
+    if (*(ucs_time_t*)src == UCS_TIME_INFINITY) {
+        return snprintf(buf, max, "inf");
+    } else if (*(ucs_time_t*)src == UCS_TIME_AUTO) {
+        return snprintf(buf, max, "auto");
+    }
+
+    value = ucs_time_to_sec(*(ucs_time_t*)src);
     return ucs_config_sprintf_time(buf, max, &value, arg);
 }
 
@@ -1007,9 +1033,12 @@ ucs_config_parser_set_value_internal(void *opts, ucs_config_field_t *fields,
                                      const char *name, const char *value,
                                      const char *table_prefix, int recurse)
 {
+    char value_buf[256] = "";
     ucs_config_field_t *field, *sub_fields;
     size_t prefix_len;
     ucs_status_t status;
+    ucs_status_t UCS_V_UNUSED status_restore;
+    int UCS_V_UNUSED ret;
     unsigned count;
     void *var;
 
@@ -1053,9 +1082,17 @@ ucs_config_parser_set_value_internal(void *opts, ucs_config_field_t *fields,
                 return UCS_ERR_NO_ELEM;
             }
 
+            /* backup current value to restore it in case if new value
+             * is not accepted */
+            ret = field->parser.write(value_buf, sizeof(value_buf) - 1, var,
+                                      field->parser.arg);
+            ucs_assert(ret != 0); /* write success */
             ucs_config_parser_release_field(field, var);
             status = ucs_config_parser_parse_field(field, value, var);
             if (status != UCS_OK) {
+                status_restore = ucs_config_parser_parse_field(field, value_buf, var);
+                /* current value must be valid */
+                ucs_assert(status_restore == UCS_OK);
                 return status;
             }
             ++count;
@@ -1552,14 +1589,15 @@ void ucs_config_parser_print_opts(FILE *stream, const char *title, const void *o
 }
 
 void ucs_config_parser_print_all_opts(FILE *stream, const char *prefix,
-                                      ucs_config_print_flags_t flags)
+                                      ucs_config_print_flags_t flags,
+                                      ucs_list_link_t *config_list)
 {
     const ucs_config_global_list_entry_t *entry;
     ucs_status_t status;
     char title[64];
     void *opts;
 
-    ucs_list_for_each(entry, &ucs_config_global_list, list) {
+    ucs_list_for_each(entry, config_list, list) {
         if ((entry->table == NULL) ||
             (ucs_config_field_is_last(&entry->table[0]))) {
             /* don't print title for an empty configuration table */

@@ -46,6 +46,8 @@ static ucs_stats_class_t uct_rc_txqp_stats_class = {
 };
 #endif
 
+static ucs_status_t uct_rc_ep_check_progress(uct_pending_req_t *self);
+
 ucs_status_t uct_rc_txqp_init(uct_rc_txqp_t *txqp, uct_rc_iface_t *iface,
                               uint32_t qp_num
                               UCS_STATS_ARG(ucs_stats_node_t* stats_parent))
@@ -60,7 +62,7 @@ ucs_status_t uct_rc_txqp_init(uct_rc_txqp_t *txqp, uct_rc_iface_t *iface,
 
 void uct_rc_txqp_cleanup(uct_rc_iface_t *iface, uct_rc_txqp_t *txqp)
 {
-    uct_rc_txqp_purge_outstanding(iface, txqp, UCS_ERR_CANCELED, 1);
+    ucs_assert(ucs_queue_is_empty(&txqp->outstanding));
     UCS_STATS_NODE_FREE(txqp->stats);
 }
 
@@ -85,6 +87,47 @@ ucs_status_t uct_rc_fc_init(uct_rc_fc_t *fc, int16_t winsize
 void uct_rc_fc_cleanup(uct_rc_fc_t *fc)
 {
     UCS_STATS_NODE_FREE(fc->stats);
+}
+
+void uct_rc_ep_cleanup_qp(uct_rc_iface_t *iface, uct_rc_ep_t *ep,
+                          uct_rc_ep_cleanup_ctx_t *cleanup_ctx, uint32_t qp_num)
+{
+    uct_rc_iface_ops_t *ops = ucs_derived_of(iface->super.ops, uct_rc_iface_ops_t);
+    uct_ib_md_t *md         = uct_ib_iface_md(&iface->super);
+    ucs_status_t status;
+
+    cleanup_ctx->iface     = iface;
+    cleanup_ctx->super.cbq = &iface->super.super.worker->super.progress_q;
+    cleanup_ctx->super.cb  = ops->cleanup_qp;
+
+    ucs_list_del(&ep->list);
+    ucs_list_add_tail(&iface->ep_gc_list, &cleanup_ctx->list);
+
+    uct_rc_iface_remove_qp(iface, qp_num);
+
+    status = uct_ib_device_async_event_wait(&md->dev,
+                                            IBV_EVENT_QP_LAST_WQE_REACHED,
+                                            qp_num, &cleanup_ctx->super);
+    if (status == UCS_OK) {
+        /* event already arrived, finish cleaning up */
+        ops->cleanup_qp(&cleanup_ctx->super);
+    } else {
+        /* deferred cleanup callback was scheduled */
+        ucs_assert(status == UCS_INPROGRESS);
+    }
+}
+
+void uct_rc_ep_cleanup_qp_done(uct_rc_ep_cleanup_ctx_t *cleanup_ctx,
+                               uint32_t qp_num)
+{
+    uct_ib_md_t *md = ucs_derived_of(cleanup_ctx->iface->super.super.md,
+                                     uct_ib_md_t);
+
+    uct_ib_device_async_event_unregister(&md->dev,
+                                         IBV_EVENT_QP_LAST_WQE_REACHED,
+                                         qp_num);
+    ucs_list_del(&cleanup_ctx->list);
+    ucs_free(cleanup_ctx);
 }
 
 UCS_CLASS_INIT_FUNC(uct_rc_ep_t, uct_rc_iface_t *iface, uint32_t qp_num,
@@ -115,7 +158,11 @@ UCS_CLASS_INIT_FUNC(uct_rc_ep_t, uct_rc_iface_t *iface, uint32_t qp_num,
 
     ucs_arbiter_group_init(&self->arb_group);
 
+    ucs_spin_lock(&iface->eps_lock);
     ucs_list_add_head(&iface->ep_list, &self->list);
+    ucs_spin_unlock(&iface->eps_lock);
+
+    ucs_debug("created rc ep %p", self);
     return UCS_OK;
 
 err_txqp_cleanup:
@@ -130,7 +177,6 @@ static UCS_CLASS_CLEANUP_FUNC(uct_rc_ep_t)
 
     ucs_debug("destroy rc ep %p", self);
 
-    ucs_list_del(&self->list);
     uct_rc_ep_pending_purge(&self->super.super, NULL, NULL);
     uct_rc_fc_cleanup(&self->fc);
     uct_rc_txqp_cleanup(iface, &self->txqp);
@@ -306,7 +352,7 @@ ucs_arbiter_cb_result_t uct_rc_ep_process_pending(ucs_arbiter_t *arbiter,
                                                   void *arg)
 {
     uct_pending_req_t *req = ucs_container_of(elem, uct_pending_req_t, priv);
-    uct_rc_ep_t *ep        = ucs_container_of(group, uct_rc_ep_t, arb_group);;
+    uct_rc_ep_t *ep        = ucs_container_of(group, uct_rc_ep_t, arb_group);
     uct_rc_iface_t *iface  = ucs_derived_of(ep->super.super.iface, uct_rc_iface_t);
     ucs_status_t status;
 
@@ -326,10 +372,10 @@ ucs_arbiter_cb_result_t uct_rc_ep_process_pending(ucs_arbiter_t *arbiter,
     }
 }
 
-static ucs_arbiter_cb_result_t uct_rc_ep_arbiter_purge_cb(ucs_arbiter_t *arbiter,
-                                                          ucs_arbiter_group_t *group,
-                                                          ucs_arbiter_elem_t *elem,
-                                                          void *arg)
+ucs_arbiter_cb_result_t uct_rc_ep_arbiter_purge_cb(ucs_arbiter_t *arbiter,
+                                                   ucs_arbiter_group_t *group,
+                                                   ucs_arbiter_elem_t *elem,
+                                                   void *arg)
 {
     uct_purge_cb_args_t *cb_args    = arg;
     uct_pending_purge_callback_t cb = cb_args->cb;
@@ -339,8 +385,11 @@ static ucs_arbiter_cb_result_t uct_rc_ep_arbiter_purge_cb(ucs_arbiter_t *arbiter
                                                        arb_group);
     uct_rc_pending_req_t *freq;
 
-    /* Invoke user's callback only if it is not internal FC message */
-    if (ucs_likely(req->func != uct_rc_ep_fc_grant)){
+    if (req->func == uct_rc_ep_check_progress) {
+        ep->flags &= ~UCT_RC_EP_FLAG_KEEPALIVE_PENDING;
+        ucs_mpool_put(req);
+    } else if (ucs_likely(req->func != uct_rc_ep_fc_grant)) {
+        /* Invoke user's callback only if it is not internal FC message */
         if (cb != NULL) {
             cb(req, cb_args->arg);
         } else {
@@ -382,16 +431,18 @@ ucs_status_t uct_rc_ep_fc_grant(uct_pending_req_t *self)
 }
 
 void uct_rc_txqp_purge_outstanding(uct_rc_iface_t *iface, uct_rc_txqp_t *txqp,
-                                   ucs_status_t status, int is_log)
+                                   ucs_status_t status, uint16_t sn, int warn)
 {
     uct_rc_iface_send_op_t *op;
     uct_rc_iface_send_desc_t *desc;
 
-    ucs_queue_for_each_extract(op, &txqp->outstanding, queue, 1) {
+    ucs_queue_for_each_extract(op, &txqp->outstanding, queue,
+                               UCS_CIRCULAR_COMPARE16(op->sn, <=, sn)) {
         if (op->handler != (uct_rc_send_handler_t)ucs_mpool_put) {
-            if (is_log != 0) {
-                ucs_warn("destroying rc ep %p with uncompleted operation %p",
-                         txqp, op);
+            /* Allow clean flush cancel op from destroy flow */
+            if (warn && (op->handler != uct_rc_ep_flush_op_completion_handler)) {
+                ucs_warn("destroying txqp %p with uncompleted operation %p handler %s",
+                         txqp, op, ucs_debug_get_symbol_name(op->handler));
             }
 
             if (op->user_comp != NULL) {
@@ -435,7 +486,13 @@ ucs_status_t uct_rc_ep_flush(uct_rc_ep_t *ep, int16_t max_available,
                                            uct_rc_iface_t);
 
     if (!uct_rc_iface_has_tx_resources(iface) ||
-        !uct_rc_ep_has_tx_resources(ep)) {
+        (uct_rc_txqp_available(&ep->txqp) <= 0)) {
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    /* Ignore FC limitations when performing flush(CANCEL) */
+    if (!uct_rc_fc_has_resources(iface, &ep->fc) &&
+        !(flags & UCT_FLUSH_FLAG_CANCEL)) {
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -444,7 +501,92 @@ ucs_status_t uct_rc_ep_flush(uct_rc_ep_t *ep, int16_t max_available,
         return UCS_OK;
     }
 
+    if (ucs_unlikely(flags & UCT_FLUSH_FLAG_CANCEL)) {
+        ucs_assert(ucs_arbiter_group_is_empty(&ep->arb_group));
+        ep->flags |= UCT_RC_EP_FLAG_FLUSH_CANCEL;
+    }
+
     return UCS_INPROGRESS;
+}
+
+static ucs_status_t uct_rc_ep_check_internal(uct_ep_h tl_ep)
+{
+    uct_rc_ep_t *ep         = ucs_derived_of(tl_ep, uct_rc_ep_t);
+    uct_rc_iface_t *iface   = ucs_derived_of(tl_ep->iface,
+                                            uct_rc_iface_t);
+    uct_rc_iface_ops_t *ops = ucs_derived_of(iface->super.ops, uct_rc_iface_ops_t);
+
+    /* in case if no TX resources are available then there is at least
+     * one signaled operation which provides actual peer status, in this case
+     * just return without any actions */
+    UCT_RC_CHECK_TXQP_RET(iface, ep, UCS_OK);
+
+    /* in case of not iface resources available then return NO_RESOURCE
+     * to add request to pending queue */
+    UCT_RC_CHECK_CQE_RET(iface, ep, UCS_ERR_NO_RESOURCE);
+
+    ops->ep_post_check(tl_ep);
+
+    return UCS_OK;
+}
+
+static ucs_status_t uct_rc_ep_check_progress(uct_pending_req_t *self)
+{
+    uct_rc_pending_req_t *req = ucs_derived_of(self, uct_rc_pending_req_t);
+    uct_rc_ep_t *ep           = ucs_derived_of(req->ep, uct_rc_ep_t);
+    ucs_status_t status;
+
+    ucs_assert(ep->flags & UCT_RC_EP_FLAG_KEEPALIVE_PENDING);
+
+    status = uct_rc_ep_check_internal(req->ep);
+    if (status == UCS_OK) {
+        ep->flags &= ~UCT_RC_EP_FLAG_KEEPALIVE_PENDING;
+        ucs_mpool_put(req);
+    } else {
+        ucs_assert(status == UCS_ERR_NO_RESOURCE);
+    }
+
+    return status;
+}
+
+ucs_status_t
+uct_rc_ep_check(uct_ep_h tl_ep, unsigned flags, uct_completion_t *comp)
+{
+    uct_rc_ep_t *ep       = ucs_derived_of(tl_ep, uct_rc_ep_t);
+    uct_rc_iface_t *iface = ucs_derived_of(tl_ep->iface,
+                                           uct_rc_iface_t);
+    uct_rc_pending_req_t *req;
+    ucs_status_t status;
+
+    UCT_EP_KEEPALIVE_CHECK_PARAM(flags, comp);
+
+    ucs_assert(ep->flags & UCT_RC_EP_FLAG_CONNECTED);
+
+    if (ep->flags & UCT_RC_EP_FLAG_KEEPALIVE_PENDING) {
+        /* keepalive request is in pending queue and will be
+         * processed when resources are available */
+        return UCS_OK;
+    }
+
+    status = uct_rc_ep_check_internal(tl_ep);
+    if (status != UCS_ERR_NO_RESOURCE) {
+        ucs_assert(status == UCS_OK);
+        return status;
+    }
+
+    /* there are no iface resources, add pending request */
+    req = ucs_mpool_get(&iface->tx.pending_mp);
+    if (req == NULL) {
+        return UCS_ERR_NO_MEMORY;
+    }
+
+    req->ep          = &ep->super.super;
+    req->super.func  = uct_rc_ep_check_progress;
+    status           = uct_rc_ep_pending_add(tl_ep, &req->super, 0);
+    ep->flags       |= UCT_RC_EP_FLAG_KEEPALIVE_PENDING;
+    ucs_assert_always(status == UCS_OK);
+
+    return UCS_OK;
 }
 
 #define UCT_RC_DEFINE_ATOMIC_HANDLER_FUNC(_num_bits, _is_be) \

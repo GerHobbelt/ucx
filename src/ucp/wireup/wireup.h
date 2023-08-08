@@ -69,7 +69,8 @@ typedef struct {
  */
 typedef struct ucp_wireup_msg {
     uint8_t                 type;         /* Message type */
-    ucp_err_handling_mode_t err_mode;     /* Peer error handling mode */
+    uint8_t                 err_mode;     /* Peer error handling mode defined in
+                                             @ucp_err_handling_mode_t */
     ucp_ep_match_conn_sn_t  conn_sn;      /* Connection sequence number */
     uint64_t                src_ep_id;    /* Endpoint ID of source */
     uint64_t                dst_ep_id;    /* Endpoint ID of destination, can be
@@ -113,7 +114,8 @@ ucs_status_t ucp_wireup_msg_progress(uct_pending_req_t *self);
 
 int ucp_wireup_msg_ack_cb_pred(const ucs_callbackq_elem_t *elem, void *arg);
 
-int ucp_wireup_is_reachable(ucp_ep_h ep, ucp_rsc_index_t rsc_index,
+int ucp_wireup_is_reachable(ucp_ep_h ep, unsigned ep_init_flags,
+                            ucp_rsc_index_t rsc_index,
                             const ucp_address_entry_t *ae);
 
 ucs_status_t ucp_wireup_init_lanes(ucp_ep_h ep, unsigned ep_init_flags,
@@ -125,9 +127,6 @@ ucs_status_t
 ucp_wireup_select_lanes(ucp_ep_h ep, unsigned ep_init_flags, uint64_t tl_bitmap,
                         const ucp_unpacked_address_t *remote_address,
                         unsigned *addr_indices, ucp_ep_config_key_t *key);
-
-void ucp_wireup_assign_lane(ucp_ep_h ep, ucp_lane_index_t lane, uct_ep_h uct_ep,
-                            const char *info);
 
 void ucp_wireup_replay_pending_requests(ucp_ep_h ucp_ep,
                                         ucs_queue_head_t *tmp_pending_queue);

@@ -481,13 +481,16 @@ enum ucp_am_cb_flags {
  * routines.
  */
 enum ucp_send_am_flags {
-    UCP_AM_SEND_REPLY = UCS_BIT(0), /**< Force relevant reply endpoint to be
-                                         passed to the data callback on the
-                                         receiver. */
-    UCP_AM_SEND_EAGER = UCS_BIT(1), /**< Force UCP to use only eager protocol
-                                         for AM sends. */
-    UCP_AM_SEND_RNDV  = UCS_BIT(2)  /**< Force UCP to use only rendezvous protocol
-                                         for AM sends. */
+    UCP_AM_SEND_FLAG_REPLY = UCS_BIT(0),             /**< Force relevant reply
+                                                          endpoint to be passed to
+                                                          the data callback on the
+                                                          receiver. */
+    UCP_AM_SEND_FLAG_EAGER = UCS_BIT(1),             /**< Force UCP to use only
+                                                          eager protocol for AM sends. */
+    UCP_AM_SEND_FLAG_RNDV  = UCS_BIT(2),             /**< Force UCP to use only
+                                                          rendezvous protocol for
+                                                          AM sends. */
+    UCP_AM_SEND_REPLY      = UCP_AM_SEND_FLAG_REPLY  /**< Backward compatibility. */
 };
 
 
@@ -592,6 +595,7 @@ typedef enum {
     UCP_OP_ATTR_FIELD_FLAGS         = UCS_BIT(4),  /**< operation-specific flags */
     UCP_OP_ATTR_FIELD_REPLY_BUFFER  = UCS_BIT(5),  /**< reply_buffer field */
     UCP_OP_ATTR_FIELD_MEMORY_TYPE   = UCS_BIT(6),  /**< memory type field */
+    UCP_OP_ATTR_FIELD_RECV_INFO     = UCS_BIT(7),  /**< recv_info field */
 
     UCP_OP_ATTR_FLAG_NO_IMM_CMPL    = UCS_BIT(16), /**< deny immediate completion */
     UCP_OP_ATTR_FLAG_FAST_CMPL      = UCS_BIT(17), /**< expedite local completion,
@@ -1413,6 +1417,21 @@ typedef struct {
      * which means the memory type will be detected internally.
      */
     ucs_memory_type_t memory_type;
+
+    /**
+     * Pointer to the information where received data details are stored
+     * in case of an immediate completion of receive operation. The user has to
+     * provide a pointer to valid memory/variable which will be updated on function
+     * return.
+     */
+    union {
+        size_t              *length;   /* Length of received message in bytes.
+                                          Relevant for non-tagged receive
+                                          operations. */
+        ucp_tag_recv_info_t *tag_info; /* Information about received message.
+                                          Relevant for @a ucp_tag_recv_nbx
+                                          function. */
+    } recv_info;
 } ucp_request_param_t;
 
 
@@ -2802,11 +2821,16 @@ ucs_status_ptr_t ucp_am_send_nbx(ucp_ep_h ep, unsigned id,
  * @param [in]  count      Number of elements to receive into @a buffer.
  * @param [in]  param      Operation parameters, see @ref ucp_request_param_t.
  *
+ * @return NULL                 - The receive operation was completed
+ *                                immediately. In this case, if
+ *                                @a param->recv_info.length is specified in the
+ *                                @a param, the value to which it points is updated
+ *                                with the size of the received message.
  * @return UCS_PTR_IS_ERR(_ptr) - The receive operation failed.
- * @return otherwise            - Operation was scheduled for send and can be
+ * @return otherwise            - Receive operation was scheduled and can be
  *                                completed at any point in time. The request
  *                                handle is returned to the application in order
- *                                to track progress of the message. If user
+ *                                to track operation progress. If user
  *                                request was not provided in @a param->request,
  *                                the application is responsible for releasing
  *                                the handle using @ref ucp_request_free routine.
@@ -3212,7 +3236,8 @@ ucs_status_ptr_t ucp_stream_recv_nb(ucp_ep_h ep, void *buffer, size_t count,
  * @return NULL                 - The receive operation was completed
  *                                immediately. In this case the value pointed by
  *                                @a length is updated by the size of received
- *                                data.
+ *                                data. Note @a param->recv_info is not relevant
+ *                                for this function.
  * @return UCS_PTR_IS_ERR(_ptr) - The receive operation failed.
  * @return otherwise            - Operation was scheduled for receive. A request
  *                                handle is returned to the application in order
@@ -3353,9 +3378,6 @@ ucs_status_t ucp_tag_recv_nbr(ucp_worker_h worker, void *buffer, size_t count,
  * message is in the receive buffer and ready for application access.  If the
  * receive operation cannot be stated the routine returns an error.
  *
- * @note This routine cannot return UCS_OK. It always returns a request
- *       handle or an error.
- *
  * @param [in]  worker      UCP worker that is used for the receive operation.
  * @param [in]  buffer      Pointer to the buffer to receive the data to.
  * @param [in]  count       Number of elements to receive
@@ -3365,13 +3387,18 @@ ucs_status_t ucp_tag_recv_nbr(ucp_worker_h worker, void *buffer, size_t count,
  *                          against the expected tag.
  * @param [in]  param       Operation parameters, see @ref ucp_request_param_t
  *
+ * @return NULL                 - The receive operation was completed
+ *                                immediately. In this case, if
+ *                                @a param->recv_info.tag_info is specified in the
+ *                                @a param, the value to which it points is updated
+ *                                with the information about the received message.
  * @return UCS_PTR_IS_ERR(_ptr) - The receive operation failed.
- * @return otherwise          - Operation was scheduled for receive. The request
- *                              handle is returned to the application in order
- *                              to track progress of the operation. The
- *                              application is responsible for releasing the
- *                              handle using @ref ucp_request_free
- *                              "ucp_request_free()" routine.
+ * @return otherwise            - Operation was scheduled for receive. The request
+ *                                handle is returned to the application in order
+ *                                to track progress of the operation. The
+ *                                application is responsible for releasing the
+ *                                handle using @ref ucp_request_free
+ *                                "ucp_request_free()" routine.
  */
 ucs_status_ptr_t ucp_tag_recv_nbx(ucp_worker_h worker, void *buffer, size_t count,
                                   ucp_tag_t tag, ucp_tag_t tag_mask,
@@ -3430,7 +3457,7 @@ ucp_tag_message_h ucp_tag_probe_nb(ucp_worker_h worker, ucp_tag_t tag,
  * This routine receives a message that is described by the local address @a
  * buffer, size @a count, @a message handle, and @a datatype object on the @a
  * worker. The @a message handle can be obtained by calling the @ref
- * ucp_tag_probe_nb "ucp_tag_probe_nb()" routine.  @ref ucp_tag_msg_recv_nb
+ * ucp_tag_probe_nb "ucp_tag_probe_nb()" routine. The @ref ucp_tag_msg_recv_nb
  * "ucp_tag_msg_recv_nb()" routine is non-blocking and therefore returns
  * immediately. The receive operation is considered completed when the message
  * is delivered to the @a buffer. In order to notify the application about
@@ -3440,7 +3467,7 @@ ucp_tag_message_h ucp_tag_probe_nb(ucp_worker_h worker, ucp_tag_t tag,
  * routine returns an error.
  *
  * @param [in]  worker      UCP worker that is used for the receive operation.
- * @param [in]  buffer      Pointer to the buffer to receive the data to.
+ * @param [in]  buffer      Pointer to the buffer that will receive the data.
  * @param [in]  count       Number of elements to receive
  * @param [in]  datatype    Datatype descriptor for the elements in the buffer.
  * @param [in]  message     Message handle.
@@ -3461,6 +3488,40 @@ ucs_status_ptr_t ucp_tag_msg_recv_nb(ucp_worker_h worker, void *buffer,
                                      ucp_tag_message_h message,
                                      ucp_tag_recv_callback_t cb);
 
+
+/**
+ * @ingroup UCP_COMM
+ * @brief Non-blocking receive operation for a probed message.
+ *
+ * This routine receives a message that is described by the local address @a
+ * buffer, size @a count, and @a message handle on the @a worker.
+ * The @a message handle can be obtained by calling the @ref
+ * ucp_tag_probe_nb "ucp_tag_probe_nb()" routine. The @ref ucp_tag_msg_recv_nbx
+ * "ucp_tag_msg_recv_nbx()" routine is non-blocking and therefore returns
+ * immediately. The receive operation is considered completed when the message
+ * is delivered to the @a buffer. In order to notify the application about
+ * completion of the receive operation the UCP library will invoke the
+ * call-back @a cb when the received message is in the receive buffer and ready
+ * for application access. If the receive operation cannot be started the
+ * routine returns an error.
+ *
+ * @param [in]  worker      UCP worker that is used for the receive operation.
+ * @param [in]  buffer      Pointer to the buffer that will receive the data.
+ * @param [in]  count       Number of elements to receive
+ * @param [in]  message     Message handle.
+ * @param [in]  param       Operation parameters, see @ref ucp_request_param_t
+ *
+ * @return UCS_PTR_IS_ERR(_ptr) - The receive operation failed.
+ * @return otherwise            - Operation was scheduled for receive. The request
+ *                                handle is returned to the application in order
+ *                                to track progress of the operation. The
+ *                                application is responsible for releasing the
+ *                                handle using @ref ucp_request_free
+ *                                "ucp_request_free()" routine.
+ */
+ucs_status_ptr_t ucp_tag_msg_recv_nbx(ucp_worker_h worker, void *buffer,
+                                      size_t count, ucp_tag_message_h message,
+                                      const ucp_request_param_t *param);
 
 /**
  * @ingroup UCP_COMM

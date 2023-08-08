@@ -7,6 +7,7 @@
 
 #include "test_rc.h"
 #include <uct/ib/rc/verbs/rc_verbs.h>
+#include <uct/test_peer_failure.h>
 
 
 void test_rc::init()
@@ -438,7 +439,7 @@ UCS_TEST_SKIP_COND_P(test_rc_get_limit, get_zcopy_purge,
         ASSERT_EQ(1ul, m_e1->num_eps());
         status = uct_ep_flush(m_e1->ep(0), flags, NULL);
         progress();
-        if (flags & UCT_FLUSH_FLAG_CANCEL) {
+        if ((flags & UCT_FLUSH_FLAG_CANCEL) && (status != UCS_ERR_NO_RESOURCE)) {
             ASSERT_UCS_OK_OR_INPROGRESS(status);
             flags = UCT_FLUSH_FLAG_LOCAL;
             continue;
@@ -841,3 +842,66 @@ UCS_TEST_P(test_rc_iface_attrs, iface_attrs)
 
 UCT_INSTANTIATE_RC_TEST_CASE(test_rc_iface_attrs)
 
+class test_rc_keepalive : public test_uct_peer_failure {
+public:
+    uct_rc_iface_t* rc_iface(entity *e) {
+        return ucs_derived_of(e->iface(), uct_rc_iface_t);
+    }
+
+    virtual void disable_entity(entity *e) {
+        rc_iface(e)->tx.cq_available = 0;
+    }
+
+    virtual void enable_entity(entity *e, unsigned cq_num = 128) {
+        rc_iface(e)->tx.cq_available = cq_num;
+    }
+};
+
+/* this test is quite tricky: it emulates missing iface resources
+ * to force keepalive operation push into arbiter. after this
+ * iface resources are restored, peer is killed and initiated processing
+ * of arbiter operations.
+ * we can't just call progress to initiate arbiter because there is
+ * no completions, and we can't initiate completion by any operation
+ * because it will produce failure (even in case if keepalive is not
+ * called and test will pass even in case if keepalive doesn't work).
+ */
+UCS_TEST_SKIP_COND_P(test_rc_keepalive, pending,
+                     !check_caps(UCT_IFACE_FLAG_EP_CHECK))
+{
+    ucs_status_t status;
+
+    scoped_log_handler slh(wrap_errors_logger);
+    flush();
+    /* ensure that everything works as expected */
+    EXPECT_EQ(0, m_err_count);
+
+    /* regular ep_check operation should be completed successfully */
+    status = uct_ep_check(ep0(), 0, NULL);
+    ASSERT_UCS_OK(status);
+    flush();
+    EXPECT_EQ(0, m_err_count);
+
+    /* emulate for lack of iface resources. after this all
+     * send/keepalive/etc operations will not be processed */
+    disable_entity(m_sender);
+
+    /* try to send keepalive message: there are TX resources, but not CQ
+     * resources. keepalive operation should be posted to pending queue */
+    status = uct_ep_check(ep0(), 0, NULL);
+    ASSERT_UCS_OK(status);
+
+    kill_receiver();
+
+    enable_entity(m_sender);
+
+    /* initiate processing of pending operations: scheduled keepalive
+     * operation should be processed & failed because peer is killed */
+    ucs_arbiter_dispatch(&rc_iface(m_sender)->tx.arbiter, 1,
+                         uct_rc_ep_process_pending, NULL);
+
+    wait_for_flag(&m_err_count);
+    EXPECT_EQ(1, m_err_count);
+}
+
+UCT_INSTANTIATE_RC_TEST_CASE(test_rc_keepalive)

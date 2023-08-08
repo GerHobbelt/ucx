@@ -22,7 +22,6 @@ nobase_dist_libucp_la_HEADERS = \
 
 noinst_HEADERS = \
 	core/ucp_am.h \
-	core/ucp_am.inl \
 	core/ucp_context.h \
 	core/ucp_ep.h \
 	core/ucp_ep.inl \
@@ -111,6 +110,10 @@ libucp_la_SOURCES = \
 	rma/amo_basic.c \
 	rma/amo_send.c \
 	rma/amo_sw.c \
+	rma/get_am.c \
+	rma/get_offload.c \
+	rma/put_am.c \
+	rma/put_offload.c \
 	rma/rma_basic.c \
 	rma/rma_send.c \
 	rma/rma_sw.c \

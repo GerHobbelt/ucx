@@ -222,6 +222,7 @@ uct_self_query_tl_devices(uct_md_h md, uct_tl_device_resource_t **tl_devices_p,
 {
     return uct_single_device_resource(md, UCT_SM_DEVICE_NAME,
                                       UCT_DEVICE_TYPE_SELF,
+                                      UCS_SYS_DEVICE_ID_UNKNOWN,
                                       tl_devices_p, num_tl_devices_p);
 }
 
@@ -323,9 +324,9 @@ static ucs_status_t uct_self_md_query(uct_md_h md, uct_md_attr_t *attr)
     /* Dummy memory registration provided. No real memory handling exists */
     attr->cap.flags            = UCT_MD_FLAG_REG |
                                  UCT_MD_FLAG_NEED_RKEY; /* TODO ignore rkey in rma/amo ops */
-    attr->cap.reg_mem_types    = UCS_MEMORY_TYPES_CPU_ACCESSIBLE;
+    attr->cap.reg_mem_types    = UCS_BIT(UCS_MEMORY_TYPE_HOST);
     attr->cap.detect_mem_types = 0;
-    attr->cap.access_mem_type  = UCS_MEMORY_TYPE_HOST;
+    attr->cap.access_mem_types = UCS_BIT(UCS_MEMORY_TYPE_HOST);
     attr->cap.max_alloc        = 0;
     attr->cap.max_reg          = ULONG_MAX;
     attr->rkey_packed_size     = 0; /* uct_md_query adds UCT_COMPONENT_NAME_MAX to this */

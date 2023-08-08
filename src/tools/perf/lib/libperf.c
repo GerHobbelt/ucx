@@ -3,7 +3,7 @@
 * Copyright (C) UT-Battelle, LLC. 2015. ALL RIGHTS RESERVED.
 * Copyright (C) The University of Tennessee and The University
 *               of Tennessee Research Foundation. 2015-2016. ALL RIGHTS RESERVED.
-* Copyright (C) ARM Ltd. 2017.  ALL RIGHTS RESERVED.
+* Copyright (C) ARM Ltd. 2017-2020.  ALL RIGHTS RESERVED.
 * See file LICENSE for terms.
 */
 
@@ -167,7 +167,6 @@ uct_perf_test_alloc_host(const ucx_perf_context_t *perf, size_t length,
     status = uct_iface_mem_alloc(perf->uct.iface, length,
                                  flags, "perftest", alloc_mem);
     if (status != UCS_OK) {
-        ucs_free(alloc_mem);
         ucs_error("failed to allocate memory: %s", ucs_status_string(status));
         return status;
     }
@@ -323,7 +322,8 @@ void ucx_perf_calc_result(ucx_perf_context_t *perf, ucx_perf_result_t *result)
     ucs_time_t median;
     double factor;
 
-    if (perf->params.test_type == UCX_PERF_TEST_TYPE_PINGPONG) {
+    if ((perf->params.test_type == UCX_PERF_TEST_TYPE_PINGPONG) ||
+        (perf->params.test_type == UCX_PERF_TEST_TYPE_PINGPONG_WAIT_MEM)) {
         factor = 2.0;
     } else {
         factor = 1.0;
@@ -511,7 +511,7 @@ static ucs_status_t uct_perf_test_check_md_support(ucx_perf_params_t *params,
                                                    ucs_memory_type_t mem_type,
                                                    uct_md_attr_t *md_attr)
 {
-    if (!(md_attr->cap.access_mem_type == mem_type) &&
+    if (!(md_attr->cap.access_mem_types & UCS_BIT(mem_type)) &&
         !(md_attr->cap.reg_mem_types & UCS_BIT(mem_type))) {
         if (params->flags & UCX_PERF_TEST_FLAG_VERBOSE) {
             ucs_error("Unsupported memory type %s by "UCT_PERF_TEST_PARAMS_FMT,
@@ -938,7 +938,7 @@ static void uct_perf_test_cleanup_endpoints(ucx_perf_context_t *perf)
 }
 
 static ucs_status_t ucp_perf_test_fill_params(ucx_perf_params_t *params,
-                                               ucp_params_t *ucp_params)
+                                              ucp_params_t *ucp_params)
 {
     ucs_status_t status;
     size_t message_size;
@@ -977,6 +977,10 @@ static ucs_status_t ucp_perf_test_fill_params(ucx_perf_params_t *params,
             ucs_error("Invalid test command");
         }
         return UCS_ERR_INVALID_PARAM;
+    }
+
+    if (params->flags & UCX_PERF_TEST_FLAG_WAKEUP) {
+        ucp_params->features |= UCP_FEATURE_WAKEUP;
     }
 
     status = ucx_perf_test_check_params(params);
@@ -1860,6 +1864,12 @@ static ucs_status_t ucx_perf_thread_run_test(void* arg)
     ucx_perf_context_t* perf        = &tctx->perf;
     ucx_perf_params_t* params       = &perf->params;
     ucs_status_t status;
+
+    /* new threads need explicit device association */
+    status = perf->allocator->init(perf);
+    if (status != UCS_OK) {
+        goto out;
+    }
 
     if (params->warmup_iter > 0) {
         ucx_perf_set_warmup(perf, params);

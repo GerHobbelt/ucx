@@ -23,17 +23,21 @@
 static unsigned ucp_listener_accept_cb_progress(void *arg)
 {
     ucp_ep_h       ep       = arg;
-    ucp_listener_h listener = ucp_ep_ext_gen(ep)->listener;
+    ucp_listener_h listener = ucp_ep_ext_control(ep)->listener;
 
     /* NOTE: protect union */
     ucs_assert(!(ep->flags & (UCP_EP_FLAG_ON_MATCH_CTX |
                               UCP_EP_FLAG_FLUSH_STATE_VALID)));
     ucs_assert(ep->flags   & UCP_EP_FLAG_LISTENER);
 
+    UCS_ASYNC_BLOCK(&ep->worker->async);
+
     ep->flags &= ~UCP_EP_FLAG_LISTENER;
     ep->flags |= UCP_EP_FLAG_USED;
     ucp_stream_ep_activate(ep);
     ucp_ep_flush_state_reset(ep);
+
+    UCS_ASYNC_UNBLOCK(&ep->worker->async);
 
     /*
      * listener is NULL if the EP was created with UCP_EP_PARAM_FIELD_EP_ADDR
@@ -88,7 +92,7 @@ static unsigned ucp_listener_conn_request_progress(void *arg)
     if (listener->accept_cb != NULL) {
         if (ep->flags & UCP_EP_FLAG_LISTENER) {
             ucs_assert(!(ep->flags & UCP_EP_FLAG_USED));
-            ucp_ep_ext_gen(ep)->listener = listener;
+            ucp_ep_ext_control(ep)->listener = listener;
         } else {
             ep->flags |= UCP_EP_FLAG_USED;
             listener->accept_cb(ep, listener->arg);
@@ -261,6 +265,10 @@ ucp_listen_on_cm(ucp_listener_h listener, const ucp_listener_params_t *params)
 
     for (i = 0; i < num_cms; ++i) {
         ucp_cm = &worker->cms[i];
+        if (ucp_cm->cm == NULL) {
+            continue;
+        }
+
         status = uct_listener_create(ucp_cm->cm, addr,
                                      params->sockaddr.addrlen, &uct_params,
                                      &uct_listeners[listener->num_rscs]);
@@ -523,6 +531,12 @@ void ucp_listener_destroy(ucp_listener_h listener)
 {
     ucs_trace("listener %p: destroying", listener);
 
+    UCS_ASYNC_BLOCK(&listener->worker->async);
+    ucs_callbackq_remove_if(&listener->worker->uct->progress_q,
+                            ucp_cm_server_conn_request_progress_cb_pred,
+                            listener);
+    UCS_ASYNC_UNBLOCK(&listener->worker->async);
+
     if (ucp_worker_sockaddr_is_cm_proto(listener->worker)) {
         ucp_listener_close_uct_listeners(listener);
     } else {
@@ -536,6 +550,8 @@ ucs_status_t ucp_listener_reject(ucp_listener_h listener,
                                  ucp_conn_request_h conn_request)
 {
     ucp_worker_h worker = listener->worker;
+
+    ucs_trace("listener %p: free conn_request %p", listener, conn_request);
 
     UCS_ASYNC_BLOCK(&worker->async);
 

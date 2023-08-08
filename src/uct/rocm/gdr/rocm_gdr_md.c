@@ -33,7 +33,8 @@ static ucs_status_t uct_rocm_gdr_md_query(uct_md_h md, uct_md_attr_t *md_attr)
     md_attr->cap.flags            = UCT_MD_FLAG_REG |
                                     UCT_MD_FLAG_NEED_RKEY;
     md_attr->cap.reg_mem_types    = UCS_BIT(UCS_MEMORY_TYPE_ROCM);
-    md_attr->cap.access_mem_type  = UCS_MEMORY_TYPE_ROCM;
+    md_attr->cap.alloc_mem_types  = 0;
+    md_attr->cap.access_mem_types = UCS_BIT(UCS_MEMORY_TYPE_ROCM);
     md_attr->cap.detect_mem_types = 0;
     md_attr->cap.max_alloc        = 0;
     md_attr->cap.max_reg          = ULONG_MAX;
@@ -116,6 +117,7 @@ static uct_md_ops_t md_ops = {
     .mkey_pack           = uct_rocm_gdr_mkey_pack,
     .mem_reg             = uct_rocm_gdr_mem_reg,
     .mem_dereg           = uct_rocm_gdr_mem_dereg,
+    .mem_query           = ucs_empty_function_return_unsupported,
     .detect_memory_type  = ucs_empty_function_return_unsupported,
 };
 

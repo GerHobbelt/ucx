@@ -72,6 +72,15 @@
 #define UCT_IB_MLX5_MP_RQ_LAST_MSG_FLAG UCS_BIT(30) /* MP last packet indication */
 #define UCT_IB_MLX5_MP_RQ_FILLER_FLAG   UCS_BIT(31) /* Filler CQE indicator */
 
+#if HAVE_DECL_MLX5DV_UAR_ALLOC_TYPE_BF
+#  define UCT_IB_MLX5_UAR_ALLOC_TYPE_WC MLX5DV_UAR_ALLOC_TYPE_BF
+#else
+#  define UCT_IB_MLX5_UAR_ALLOC_TYPE_WC 0
+#endif
+
+#if HAVE_DECL_MLX5DV_UAR_ALLOC_TYPE_NC
+#  define UCT_IB_MLX5_UAR_ALLOC_TYPE_NC MLX5DV_UAR_ALLOC_TYPE_NC
+#endif
 
 #define UCT_IB_MLX5_OPMOD_EXT_ATOMIC(_log_arg_size) \
     ((8) | ((_log_arg_size) - 2))
@@ -161,13 +170,16 @@ enum {
     UCT_IB_MLX5_MD_FLAG_INDIRECT_ATOMICS = UCS_BIT(4),
     /* Device supports RMP to create SRQ for AM */
     UCT_IB_MLX5_MD_FLAG_RMP              = UCS_BIT(5),
+    /* Device supports querying bitmask of OOO (AR) states per SL */
+    UCT_IB_MLX5_MD_FLAG_OOO_SL_MASK      = UCS_BIT(6),
 
     /* Object to be created by DevX */
-    UCT_IB_MLX5_MD_FLAG_DEVX_OBJS_SHIFT  = 6,
+    UCT_IB_MLX5_MD_FLAG_DEVX_OBJS_SHIFT  = 7,
     UCT_IB_MLX5_MD_FLAG_DEVX_RC_QP       = UCT_IB_MLX5_MD_FLAG_DEVX_OBJS(RCQP),
     UCT_IB_MLX5_MD_FLAG_DEVX_RC_SRQ      = UCT_IB_MLX5_MD_FLAG_DEVX_OBJS(RCSRQ),
     UCT_IB_MLX5_MD_FLAG_DEVX_DCT         = UCT_IB_MLX5_MD_FLAG_DEVX_OBJS(DCT),
     UCT_IB_MLX5_MD_FLAG_DEVX_DC_SRQ      = UCT_IB_MLX5_MD_FLAG_DEVX_OBJS(DCSRQ),
+    UCT_IB_MLX5_MD_FLAG_DEVX_DCI         = UCT_IB_MLX5_MD_FLAG_DEVX_OBJS(DCI),
 };
 
 
@@ -225,6 +237,7 @@ typedef struct uct_ib_mlx5_iface_config {
     } dm;
 #endif
     uct_ib_mlx5_mmio_mode_t  mmio_mode;
+    ucs_ternary_auto_value_t ar_enable;
 } uct_ib_mlx5_iface_config_t;
 
 
@@ -321,6 +334,7 @@ typedef struct uct_ib_mlx5_res_domain {
 typedef struct uct_ib_mlx5_qp_attr {
     uct_ib_qp_attr_t            super;
     uct_ib_mlx5_mmio_mode_t     mmio_mode;
+    int                         full_handshake;
 } uct_ib_mlx5_qp_attr_t;
 
 
@@ -474,6 +488,8 @@ ucs_status_t uct_ib_mlx5_modify_qp_state(uct_ib_mlx5_md_t *md,
                                          uct_ib_mlx5_qp_t *qp,
                                          enum ibv_qp_state state);
 
+void uct_ib_mlx5_destroy_qp(uct_ib_mlx5_md_t *md, uct_ib_mlx5_qp_t *qp);
+
 /**
  * Create CQ with DV
  */
@@ -517,7 +533,8 @@ ucs_status_t uct_ib_mlx5_txwq_init(uct_priv_worker_t *worker,
                                    uct_ib_mlx5_mmio_mode_t cfg_mmio_mode,
                                    uct_ib_mlx5_txwq_t *txwq, struct ibv_qp *verbs_qp);
 
-void uct_ib_mlx5_txwq_cleanup(uct_ib_mlx5_txwq_t* txwq);
+void uct_ib_mlx5_qp_mmio_cleanup(uct_ib_mlx5_qp_t *qp,
+                                 uct_ib_mlx5_mmio_reg_t *reg);
 
 /**
  * Reset txwq contents and posting indices.
@@ -573,6 +590,10 @@ ucs_status_t uct_ib_mlx5_devx_modify_qp_state(uct_ib_mlx5_qp_t *qp,
                                               enum ibv_qp_state state);
 
 void uct_ib_mlx5_devx_destroy_qp(uct_ib_mlx5_md_t *md, uct_ib_mlx5_qp_t *qp);
+
+ucs_status_t uct_ib_mlx5_devx_query_ooo_sl_mask(uct_ib_mlx5_md_t *md,
+                                                uint8_t port_num,
+                                                uint16_t *ooo_sl_mask_p);
 
 static inline ucs_status_t
 uct_ib_mlx5_md_buf_alloc(uct_ib_mlx5_md_t *md, size_t size, int silent,
@@ -666,6 +687,18 @@ uct_ib_mlx5_devx_modify_qp_state(uct_ib_mlx5_qp_t *qp, enum ibv_qp_state state)
 static inline void uct_ib_mlx5_devx_destroy_qp(uct_ib_mlx5_md_t *md, uct_ib_mlx5_qp_t *qp) { }
 
 #endif
+
+ucs_status_t
+uct_ib_mlx5_select_sl(const uct_ib_iface_config_t *ib_config,
+                      ucs_ternary_auto_value_t ar_enable,
+                      uint16_t hw_sl_mask, int have_sl_mask_cap,
+                      const char *dev_name, uint8_t port_num,
+                      uint8_t *sl_p);
+
+ucs_status_t
+uct_ib_mlx5_iface_select_sl(uct_ib_iface_t *iface,
+                            const uct_ib_mlx5_iface_config_t *ib_mlx5_config,
+                            const uct_ib_iface_config_t *ib_config);
 
 static inline uct_ib_mlx5_dbrec_t *uct_ib_mlx5_get_dbrec(uct_ib_mlx5_md_t *md)
 {

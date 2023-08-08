@@ -117,6 +117,10 @@ static ucs_config_field_t ucp_config_table[] = {
    "establishing client/server connection. ",
    ucs_offsetof(ucp_config_t, sockaddr_aux_tls), UCS_CONFIG_TYPE_STRING_ARRAY},
 
+  {"SELECT_DISTANCE_MD", "cuda_cpy",
+   "MD whose distance is queried when evaluating transport selection score",
+   ucs_offsetof(ucp_config_t, selection_cmp), UCS_CONFIG_TYPE_STRING},
+
   {"WARN_INVALID_CONFIG", "y",
    "Issue a warning in case of invalid device and/or transport configuration.",
    ucs_offsetof(ucp_config_t, warn_invalid_config), UCS_CONFIG_TYPE_BOOL},
@@ -284,7 +288,7 @@ static ucs_config_field_t ucp_config_table[] = {
    "of all entities which connect to each other are the same.",
    ucs_offsetof(ucp_config_t, ctx.unified_mode), UCS_CONFIG_TYPE_BOOL},
 
-  {"SOCKADDR_CM_ENABLE", "n" /* TODO: set try by default */,
+  {"SOCKADDR_CM_ENABLE", "y",
    "Enable alternative wireup protocol for sockaddr connected endpoints.\n"
    "Enabling this mode changes underlying UCT mechanism for connection\n"
    "establishment and enables synchronized close protocol which does not\n"
@@ -307,9 +311,10 @@ static ucs_config_field_t ucp_config_table[] = {
    "Experimental: enable new protocol selection logic",
    ucs_offsetof(ucp_config_t, ctx.proto_enable), UCS_CONFIG_TYPE_BOOL},
 
-  {"KEEPALIVE_TIMEOUT", "0us",
-   "Time period between keepalive rounds (0 - disabled).",
-   ucs_offsetof(ucp_config_t, ctx.keepalive_timeout), UCS_CONFIG_TYPE_TIME_UNITS},
+  /* TODO: set for keepalive more reasonable values */
+  {"KEEPALIVE_INTERVAL", "0",
+   "Time interval between keepalive rounds (0 - disabled).",
+   ucs_offsetof(ucp_config_t, ctx.keepalive_interval), UCS_CONFIG_TYPE_TIME},
 
   {"KEEPALIVE_NUM_EPS", "0",
    "Maximal number of endpoints to check on every keepalive round\n"
@@ -324,11 +329,12 @@ static ucs_config_field_t ucp_config_table[] = {
 
    {NULL}
 };
-UCS_CONFIG_REGISTER_TABLE(ucp_config_table, "UCP context", NULL, ucp_config_t)
+UCS_CONFIG_REGISTER_TABLE(ucp_config_table, "UCP context", NULL, ucp_config_t,
+                          &ucs_config_global_list)
 
 
 static ucp_tl_alias_t ucp_tl_aliases[] = {
-  { "mm",    { "posix", "sysv", "xpmem" } }, /* for backward compatibility */
+  { "mm",    { "posix", "sysv", "xpmem", NULL } }, /* for backward compatibility */
   { "sm",    { "posix", "sysv", "xpmem", "knem", "cma", "rdmacm", "sockcm", NULL } },
   { "shm",   { "posix", "sysv", "xpmem", "knem", "cma", "rdmacm", "sockcm", NULL } },
   { "ib",    { "rc_verbs", "ud_verbs", "rc_mlx5", "ud_mlx5", "dc_mlx5", "rdmacm", NULL } },
@@ -705,7 +711,8 @@ static ucs_status_t ucp_add_tl_resources(ucp_context_h context,
 
     /* add sockaddr dummy resource, if md supports it */
     if (md->attr.cap.flags & UCT_MD_FLAG_SOCKADDR) {
-        sa_rsc.dev_type = UCT_DEVICE_TYPE_NET;
+        sa_rsc.dev_type   = UCT_DEVICE_TYPE_NET;
+        sa_rsc.sys_device = UCS_SYS_DEVICE_ID_UNKNOWN;
         ucs_snprintf_zero(sa_rsc.tl_name, UCT_TL_NAME_MAX, "%s", md->rsc.md_name);
         ucs_snprintf_zero(sa_rsc.dev_name, UCT_DEVICE_NAME_MAX, "sockaddr");
         ucp_add_tl_resource_if_enabled(context, md, md_index, config, &sa_rsc,
@@ -743,11 +750,10 @@ static void ucp_report_unavailable(const ucs_config_names_array_t* cfg,
                                    const char *title2,
                                    const ucs_string_set_t *avail_names)
 {
-    ucs_string_buffer_t avail_strb, unavail_strb;
+    UCS_STRING_BUFFER_ONSTACK(avail_strb,   256);
+    UCS_STRING_BUFFER_ONSTACK(unavail_strb, 256);
     unsigned i;
     int found;
-
-    ucs_string_buffer_init(&unavail_strb);
 
     found = 0;
     for (i = 0; i < cfg->count; i++) {
@@ -760,7 +766,6 @@ static void ucp_report_unavailable(const ucs_config_names_array_t* cfg,
     }
 
     if (found) {
-        ucs_string_buffer_init(&avail_strb);
         ucs_string_set_print_sorted(avail_names, &avail_strb, ", ");
         ucs_warn("%s%s%s %s %s not available, please use one or more of: %s",
                  title1, title2,
@@ -768,10 +773,7 @@ static void ucp_report_unavailable(const ucs_config_names_array_t* cfg,
                  ucs_string_buffer_cstr(&unavail_strb),
                  (found > 1) ? "are" : "is",
                  ucs_string_buffer_cstr(&avail_strb));
-        ucs_string_buffer_cleanup(&avail_strb);
     }
-
-    ucs_string_buffer_cleanup(&unavail_strb);
 }
 
 const char * ucp_find_tl_name_by_csum(ucp_context_t *context, uint16_t tl_name_csum)
@@ -1454,11 +1456,19 @@ static ucs_status_t ucp_fill_config(ucp_context_h context,
      * routines */
     UCP_THREAD_LOCK_INIT(&context->mt_lock);
 
+    /* save comparison MD for iface_attr adjustment */
+    context->config.selection_cmp = ucs_strdup(config->selection_cmp,
+                                               "selection cmp");
+    if (context->config.selection_cmp == NULL) {
+        status = UCS_ERR_NO_MEMORY;
+        goto err;
+    }
+
     /* save environment prefix to later notify user for unused variables */
     context->config.env_prefix = ucs_strdup(config->env_prefix, "ucp config");
     if (context->config.env_prefix == NULL) {
         status = UCS_ERR_NO_MEMORY;
-        goto err;
+        goto err_free_selection_cmp;
     }
 
     /* Get allocation alignment from configuration, make sure it's valid */
@@ -1533,12 +1543,15 @@ static ucs_status_t ucp_fill_config(ucp_context_h context,
         }
     }
 
+    context->config.keepalive_interval = ucs_time_from_sec(context->config.ext.keepalive_interval);
     return UCS_OK;
 
 err_free_alloc_methods:
     ucs_free(context->config.alloc_methods);
 err_free_env_prefix:
     ucs_free(context->config.env_prefix);
+err_free_selection_cmp:
+    ucs_free(context->config.selection_cmp);
 err:
     UCP_THREAD_LOCK_FINALIZE(&context->mt_lock);
     return status;
@@ -1548,6 +1561,7 @@ static void ucp_free_config(ucp_context_h context)
 {
     ucs_free(context->config.alloc_methods);
     ucs_free(context->config.env_prefix);
+    ucs_free(context->config.selection_cmp);
 }
 
 ucs_status_t ucp_init_version(unsigned api_major_version, unsigned api_minor_version,

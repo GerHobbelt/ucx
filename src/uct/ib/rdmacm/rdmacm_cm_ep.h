@@ -13,7 +13,6 @@
 typedef struct uct_rdmacm_cm_ep {
     uct_cm_base_ep_t  super;
     struct rdma_cm_id *id;  /* The rdmacm id that is created per this ep */
-    struct ibv_cq     *cq;  /* Dummy cq used for creating a dummy qp */
     struct ibv_qp     *qp;  /* Dummy qp used for generating a unique qp_num */
     uint8_t           flags;
     ucs_status_t      status;
@@ -33,6 +32,22 @@ enum {
                                                                see @ref
                                                                uct_rdmacm_cm_ep_t::status.*/
 };
+
+
+static UCS_F_ALWAYS_INLINE
+uct_rdmacm_cm_t *uct_rdmacm_cm_ep_get_cm(uct_rdmacm_cm_ep_t *cep)
+{
+    /* return the rdmacm connection manager this ep is using */
+    return ucs_container_of(cep->super.super.super.iface, uct_rdmacm_cm_t,
+                            super.iface);
+}
+
+
+static UCS_F_ALWAYS_INLINE
+ucs_async_context_t *uct_rdmacm_cm_ep_get_async(uct_rdmacm_cm_ep_t *cep)
+{
+    return uct_rdmacm_cm_get_async(uct_rdmacm_cm_ep_get_cm(cep));
+}
 
 UCS_CLASS_DECLARE_NEW_FUNC(uct_rdmacm_cm_ep_t, uct_ep_t, const uct_ep_params_t *);
 UCS_CLASS_DECLARE_DELETE_FUNC(uct_rdmacm_cm_ep_t, uct_ep_t);

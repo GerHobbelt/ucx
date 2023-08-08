@@ -26,8 +26,8 @@
 
 WORKSPACE=${WORKSPACE:=$PWD}
 ucx_inst=${WORKSPACE}/install
-CUDA_MODULE="dev/cuda11.0"
-GDRCOPY_MODULE="dev/gdrcopy2.0_cuda11.0"
+CUDA_MODULE="dev/cuda11.1.1"
+GDRCOPY_MODULE="dev/gdrcopy2.1_cuda11.1.1"
 
 if [ -z "$BUILD_NUMBER" ]; then
 	echo "Running interactive"
@@ -91,6 +91,18 @@ then
 	nworkers=1
 fi
 echo "==== Running on $(hostname), worker $worker / $nworkers ===="
+
+# Report an warning message to Azure pipeline
+log_warning() {
+	msg=$1
+	test "x$RUNNING_IN_AZURE" = "xyes" && { azure_log_warning "${msg}" ; set -x; } || echo "${msg}"
+}
+
+# Report an error message to Azure pipeline
+log_error() {
+	msg=$1
+	test "x$RUNNING_IN_AZURE" = "xyes" && { azure_log_error "${msg}" ; set -x; } || echo "${msg}"
+}
 
 #
 # cleanup ucx
@@ -204,15 +216,41 @@ get_my_tasks() {
 }
 
 #
-# Get list of active IB devices
+# Get list IB devices
 #
-get_active_ib_devices() {
-	device_list=$(ibv_devinfo -l | tail -n +2 | sed -e 's/^[ \t]*//' | head -n -1)
+get_ib_devices() {
+	state=$1
+	device_list=$(ibv_devinfo -l | tail -n +2)
 	for ibdev in $device_list
 	do
-		port=1
-		(ibv_devinfo -d $ibdev -i $port | grep -q PORT_ACTIVE) && echo "$ibdev:$port" || true
+		num_ports=$(ibv_devinfo -d $ibdev| awk '/phys_port_cnt:/ {print $2}')
+		for port in $(seq 1 $num_ports)
+		do
+			if ibv_devinfo -d $ibdev -i $port | grep -q $state
+			then
+				echo "$ibdev:$port"
+			fi
+		done
 	done
+}
+
+#
+# Get IB devices on state Active
+#
+get_active_ib_devices() {
+	get_ib_devices PORT_ACTIVE
+}
+
+#
+# Check IB devices on state INIT
+#
+check_machine() {
+	init_dev=$(get_ib_devices PORT_INIT)
+	if [ -n "${init_dev}" ]
+	then
+		echo "${init_dev} have state PORT_INIT"
+		exit 1
+	fi
 }
 
 #
@@ -300,7 +338,7 @@ build_docs() {
 		then
 			doxy_ready=1
 		else
-			echo " doxygen was not found"
+			log_warning "Doxygen was not found"
 		fi
 	else
 		doxy_ready=1
@@ -328,7 +366,7 @@ build_java_docs() {
 		module unload dev/jdk
 		module unload dev/mvn
 	else
-		echo "No jdk and mvn module, failed to build docs".
+		log_warning "No jdk and mvn module, failed to build docs".
 	fi
 }
 
@@ -396,7 +434,7 @@ build_release_pkg() {
 	# extract version from configure.ac and convert to MAJOR.MINOR.PATCH representation
 	version=$(grep -P "define\S+ucx_ver" configure.ac | awk '{print $2}' | sed 's,),,' | xargs echo | tr ' ' '.')
 	if ! grep -q "$version" ucx.spec.in; then
-		echo "Current UCX version ($version) is not present in ucx.spec.in changelog"
+		log_error "Current UCX version ($version) is not present in ucx.spec.in changelog"
 		exit 1
 	fi
 	cd -
@@ -409,7 +447,7 @@ build_release_pkg() {
 #
 build_icc() {
 	echo 1..1 > build_icc.tap
-	if module_load intel/ics && icc -v
+	if module_load intel/ics-19.1.1 && icc -v
 	then
 		echo "==== Build with Intel compiler ===="
 		../contrib/configure-devel --prefix=$ucx_inst CC=icc CXX=icpc
@@ -423,10 +461,10 @@ build_icc() {
 		make_clean distclean
 		echo "ok 1 - build successful " >> build_icc.tap
 	else
-		echo "==== Not building with Intel compiler ===="
+		log_warning "==== Not building with Intel compiler ===="
 		echo "ok 1 - # SKIP because Intel compiler not installed" >> build_icc.tap
 	fi
-	module_unload intel/ics
+	module_unload intel/ics-19.1.1
 }
 
 #
@@ -450,7 +488,7 @@ build_pgi() {
 		make_clean distclean
 		echo "ok 1 - build successful " >> build_pgi.tap
 	else
-		echo "==== Not building with PGI compiler ===="
+		log_warning "==== Not building with PGI compiler ===="
 		echo "ok 1 - # SKIP because PGI compiler not installed" >> build_pgi.tap
 	fi
 
@@ -595,12 +633,12 @@ build_gcc_latest() {
 			echo "ok 1 - build successful " >> build_gcc_latest.tap
 			module unload dev/gcc-latest
 		else
-			echo "==== Not building with latest gcc compiler ===="
+			log_warning "==== Not building with latest gcc compiler ===="
 			echo "ok 1 - # SKIP because dev/gcc-latest module is not available" >> build_gcc_latest.tap
 		fi
 	else
-		echo "==== Not building with gcc compiler ===="
-		echo "Required glibc version is too old ($ldd_ver)"
+		log_warning "==== Not building with gcc compiler ===="
+		log_warning "Required glibc version is too old ($ldd_ver)"
 		echo "ok 1 - # SKIP because glibc version is older than 2.14" >> build_gcc_latest.tap
 	fi
 }
@@ -679,7 +717,7 @@ check_make_distcheck() {
 		../contrib/configure-release --prefix=$PWD/install
 		$MAKEP DISTCHECK_CONFIGURE_FLAGS="--enable-gtest" distcheck
 	else
-		echo "Not testing make distcheck: GCC version is too old ($(gcc --version|head -1))"
+		log_warning "Not testing make distcheck: GCC version is too old ($(gcc --version|head -1))"
 	fi
 }
 
@@ -691,13 +729,13 @@ check_config_h() {
 	# Check if all .c files include config.h
 	echo "==== Checking for config.h files in directory $srcdir ===="
 
-	missing=`find $srcdir -name \*.c -o -name \*.cc | xargs grep -LP '\#\s*include\s+"config.h"'`
+	missing=`find $srcdir \( -name "*.c" -o -name "*.cc" \) -type f -exec grep -LP '\#\s*include\s+"config.h"' {} \;`
 
 	if [ `echo $missing | wc -w` -eq 0 ]
 	then
 		echo "ok 1 - check successful " >> check_config_h.tap
 	else
-		echo "Error: missing include config.h in files: $missing"
+		log_error "Missing include config.h in files: $missing"
 		exit 1
 	fi
 }
@@ -751,7 +789,7 @@ rename_files() {
 }
 
 run_client_server_app() {
-	test_name=$1
+	test_exe=$1
 	test_args=$2
 	server_addr_arg=$3
 	kill_server=$4
@@ -763,7 +801,7 @@ run_client_server_app() {
 	affinity_server=$(slice_affinity 0)
 	affinity_client=$(slice_affinity 1)
 
-	taskset -c $affinity_server ${test_name} ${test_args} ${server_port_arg} &
+	taskset -c $affinity_server ${test_exe} ${test_args} ${server_port_arg} &
 	server_pid=$!
 
 	sleep 15
@@ -773,7 +811,7 @@ run_client_server_app() {
 		set +Ee
 	fi
 
-	taskset -c $affinity_client ${test_name} ${test_args} ${server_addr_arg} ${server_port_arg} &
+	taskset -c $affinity_client ${test_exe} ${test_args} ${server_addr_arg} ${server_port_arg} &
 	client_pid=$!
 
 	wait ${client_pid}
@@ -802,14 +840,14 @@ run_hello() {
 	fi
 
 	# set smaller timeouts so the test will complete faster
-	if [[ ${test_args} == *"-e"* ]]
+	if [[ ${test_args} =~ "-e" ]]
 	then
 		export UCX_UD_TIMEOUT=15s
 		export UCX_RC_TIMEOUT=1ms
 		export UCX_RC_RETRY_COUNT=4
 	fi
 
-	if [[ ${test_args} == *"-e"* ]]
+	if [[ ${test_args} =~ "-e" ]]
 	then
 		error_emulation=1
 	else
@@ -842,7 +880,10 @@ run_ucp_hello() {
 		mem_types_list+="cuda cuda-managed "
 	fi
 
-	for test_mode in -w -f -b -e
+	export UCX_KEEPALIVE_INTERVAL=1s
+	export UCX_KEEPALIVE_NUM_EPS=10
+
+	for test_mode in -w -f -b -erecv -esend -ekeepalive
 	do
 		for mem_type in $mem_types_list
 		do
@@ -851,6 +892,9 @@ run_ucp_hello() {
 		done
 	done
 	rm -f ./ucp_hello_world
+
+	unset UCX_KEEPALIVE_INTERVAL
+	unset UCX_KEEPALIVE_NUM_EPS
 }
 
 #
@@ -915,8 +959,10 @@ run_ucp_client_server() {
 }
 
 run_io_demo() {
-	server_ip=$(get_rdma_device_ip_addr)
-	if [ "$server_ip" == "" ]
+	server_rdma_addr=$(get_rdma_device_ip_addr)
+	server_loopback_addr="127.0.0.1"
+
+	if [ "$server_rdma_addr" == "" ]
 	then
 		return
 	fi
@@ -932,7 +978,11 @@ run_io_demo() {
 	fi
 
 	export UCX_SOCKADDR_CM_ENABLE=y
-	run_client_server_app "./test/apps/iodemo/${test_name}" "${test_args}" "${server_ip}" 1 0
+
+	for server_ip in $server_rdma_addr $server_loopback_addr
+	do
+		run_client_server_app "./test/apps/iodemo/${test_name}" "${test_args}" "${server_ip}" 1 0
+	done
 
 	unset UCX_SOCKADDR_CM_ENABLE
 	make_clean
@@ -1320,7 +1370,7 @@ test_jucx() {
 			     -XX:OnError="cat $WORKSPACE/hs_err_${BUILD_NUMBER}_%p.log" \
 			     -cp "bindings/java/resources/:bindings/java/src/main/native/build-java/*" \
 			  org.openucx.jucx.examples.UcxReadBWBenchmarkReceiver \
-			     s=$server_ip p=$JUCX_TEST_PORT &
+			     s=$server_ip p=$JUCX_TEST_PORT t=1000000 &
 			     java_pid=$!
 
 			sleep 10
@@ -1329,7 +1379,7 @@ test_jucx() {
 			     -XX:OnError="cat $WORKSPACE/hs_err_${BUILD_NUMBER}_%p.log" \
 			     -cp "bindings/java/resources/:bindings/java/src/main/native/build-java/*"  \
 			  org.openucx.jucx.examples.UcxReadBWBenchmarkSender \
-			     s=$server_ip p=$JUCX_TEST_PORT t=10000000
+			     s=$server_ip p=$JUCX_TEST_PORT t=1000000
 			wait $java_pid
 		done
 
@@ -1605,6 +1655,7 @@ run_tests() {
 	export UCX_ERROR_MAIL_FOOTER=$JOB_URL/$BUILD_NUMBER/console
 	export UCX_TCP_PORT_RANGE="$((33000 + EXECUTOR_NUMBER * 100))"-"$((34000 + EXECUTOR_NUMBER * 100))"
 	export UCX_TCP_CM_ALLOW_ADDR_INUSE=y
+	export UCX_TCP_LOOPBACK_ENABLE=y
 
 	# test cuda build if cuda modules available
 	do_distributed_task 2 4 build_cuda
@@ -1672,5 +1723,6 @@ do_distributed_task 1 4 check_make_distcheck
 do_distributed_task 2 4 check_config_h
 if [ -n "$JENKINS_RUN_TESTS" ] || [ -n "$RUN_TESTS" ]
 then
+	check_machine
 	run_tests
 fi

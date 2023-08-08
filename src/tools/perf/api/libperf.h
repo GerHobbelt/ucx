@@ -3,6 +3,7 @@
 * Copyright (C) UT-Battelle, LLC. 2015. ALL RIGHTS RESERVED.
 * Copyright (C) The University of Tennessee and The University 
 *               of Tennessee Research Foundation. 2015. ALL RIGHTS RESERVED.
+* Copyright (C) ARM Ltd. 2020.  ALL RIGHTS RESERVED.
 * See file LICENSE for terms.
 */
 
@@ -47,6 +48,8 @@ typedef enum {
 
 typedef enum {
     UCX_PERF_TEST_TYPE_PINGPONG,         /* Ping-pong mode */
+    UCX_PERF_TEST_TYPE_PINGPONG_WAIT_MEM,/* Ping-pong mode with
+                                            ucp_worker_wait_mem() */
     UCX_PERF_TEST_TYPE_STREAM_UNI,       /* Unidirectional stream */
     UCX_PERF_TEST_TYPE_STREAM_BI,        /* Bidirectional stream */
     UCX_PERF_TEST_TYPE_LAST
@@ -84,7 +87,8 @@ enum ucx_perf_test_flags {
     UCX_PERF_TEST_FLAG_TAG_UNEXP_PROBE  = UCS_BIT(5), /* For tag tests, use probe to get unexpected receive */
     UCX_PERF_TEST_FLAG_VERBOSE          = UCS_BIT(7), /* Print error messages */
     UCX_PERF_TEST_FLAG_STREAM_RECV_DATA = UCS_BIT(8), /* For stream tests, use recv data API */
-    UCX_PERF_TEST_FLAG_FLUSH_EP         = UCS_BIT(9)  /* Issue flush on endpoint instead of worker */
+    UCX_PERF_TEST_FLAG_FLUSH_EP         = UCS_BIT(9), /* Issue flush on endpoint instead of worker */
+    UCX_PERF_TEST_FLAG_WAKEUP           = UCS_BIT(10) /* Create context with wakeup feature enabled */
 };
 
 

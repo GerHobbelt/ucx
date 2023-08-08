@@ -207,9 +207,9 @@ out:
     return status;
 }
 
-static void
-ucp_wireup_ep_pending_purge(uct_ep_h uct_ep, uct_pending_purge_callback_t cb,
-                            void *arg)
+void ucp_wireup_ep_pending_queue_purge(uct_ep_h uct_ep,
+                                       uct_pending_purge_callback_t cb,
+                                       void *arg)
 {
     ucp_wireup_ep_t *wireup_ep = ucp_wireup_ep(uct_ep);
     ucp_worker_h worker        = wireup_ep->super.ucp_ep->worker;
@@ -223,6 +223,15 @@ ucp_wireup_ep_pending_purge(uct_ep_h uct_ep, uct_pending_purge_callback_t cb,
         UCS_ASYNC_UNBLOCK(&worker->async);
         cb(&ucp_req->send.uct, arg);
     }
+}
+
+static void
+ucp_wireup_ep_pending_purge(uct_ep_h uct_ep, uct_pending_purge_callback_t cb,
+                            void *arg)
+{
+    ucp_wireup_ep_t *wireup_ep = ucp_wireup_ep(uct_ep);
+
+    ucp_wireup_ep_pending_queue_purge(uct_ep, cb, arg);
 
     if (wireup_ep->pending_count > 0) {
         uct_ep_pending_purge(ucp_wireup_ep_get_msg_ep(wireup_ep),
@@ -327,6 +336,7 @@ UCS_CLASS_INIT_FUNC(ucp_wireup_ep_t, ucp_ep_h ucp_ep)
     static uct_iface_ops_t ops = {
         .ep_connect_to_ep    = ucp_wireup_ep_connect_to_ep,
         .ep_flush            = ucp_wireup_ep_flush,
+        .ep_check            = ucs_empty_function_return_success,
         .ep_destroy          = UCS_CLASS_DELETE_FUNC_NAME(ucp_wireup_ep_t),
         .ep_pending_add      = ucp_wireup_ep_pending_add,
         .ep_pending_purge    = ucp_wireup_ep_pending_purge,
@@ -351,6 +361,7 @@ UCS_CLASS_INIT_FUNC(ucp_wireup_ep_t, ucp_ep_h ucp_ep)
         .ep_atomic32_fetch   = (uct_ep_atomic32_fetch_func_t)ucs_empty_function_return_no_resource,
         .ep_atomic_cswap32   = (uct_ep_atomic_cswap32_func_t)ucs_empty_function_return_no_resource
     };
+    ucp_lane_index_t lane;
 
     UCS_CLASS_CALL_SUPER_INIT(ucp_proxy_ep_t, &ops, ucp_ep, NULL, 0);
 
@@ -364,6 +375,10 @@ UCS_CLASS_INIT_FUNC(ucp_wireup_ep_t, ucp_ep_h ucp_ep)
     self->progress_id        = UCS_CALLBACKQ_ID_NULL;
     self->cm_idx             = UCP_NULL_RESOURCE;
     ucs_queue_head_init(&self->pending_q);
+
+    for (lane = 0; lane < UCP_MAX_LANES; ++lane) {
+        self->dst_rsc_indices[lane] = UCP_NULL_RESOURCE;
+    }
 
     UCS_ASYNC_BLOCK(&ucp_ep->worker->async);
     ucp_worker_flush_ops_count_inc(ucp_ep->worker);
@@ -720,6 +735,19 @@ int ucp_wireup_ep_test(uct_ep_h uct_ep)
                     UCS_CLASS_DELETE_FUNC_NAME(ucp_wireup_ep_t);
 }
 
+int ucp_wireup_aux_ep_is_owner(ucp_wireup_ep_t *wireup_ep, uct_ep_h owned_ep)
+{
+    ucp_ep_h ucp_ep              = wireup_ep->super.ucp_ep;
+    ucp_lane_index_t cm_lane_idx = ucp_ep_get_cm_lane(ucp_ep);
+
+    return (wireup_ep->aux_ep == owned_ep) ||
+           /* Auxilliary EP can be WIREUP EP in case of it is on CM lane */
+           ((wireup_ep->aux_ep != NULL) &&
+            (cm_lane_idx != UCP_NULL_LANE) &&
+            (ucp_ep->uct_eps[cm_lane_idx] == &wireup_ep->super.super) &&
+            ucp_wireup_ep_is_owner(wireup_ep->aux_ep, owned_ep));
+}
+
 int ucp_wireup_ep_is_owner(uct_ep_h uct_ep, uct_ep_h owned_ep)
 {
     ucp_wireup_ep_t *wireup_ep = ucp_wireup_ep(uct_ep);
@@ -728,7 +756,7 @@ int ucp_wireup_ep_is_owner(uct_ep_h uct_ep, uct_ep_h owned_ep)
         return 0;
     }
 
-    return (wireup_ep->aux_ep == owned_ep) ||
+    return (ucp_wireup_aux_ep_is_owner(wireup_ep, owned_ep)) ||
            (wireup_ep->sockaddr_ep == owned_ep) ||
            (wireup_ep->super.uct_ep == owned_ep);
 }

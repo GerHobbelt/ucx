@@ -29,7 +29,7 @@ static ucs_config_field_t uct_tcp_iface_config_table[] = {
   {"TX_SEG_SIZE", "8kb",
    "Size of send copy-out buffer",
    ucs_offsetof(uct_tcp_iface_config_t, tx_seg_size), UCS_CONFIG_TYPE_MEMUNITS},
-  
+
   {"RX_SEG_SIZE", "64kb",
    "Size of receive copy-out buffer",
    ucs_offsetof(uct_tcp_iface_config_t, rx_seg_size), UCS_CONFIG_TYPE_MEMUNITS},
@@ -81,9 +81,28 @@ static ucs_config_field_t uct_tcp_iface_config_table[] = {
                                 ucs_offsetof(uct_tcp_iface_config_t, rx_mpool), ""),
 
   {"PORT_RANGE", "0",
-   "Generate a random TCP port number from that range. A value of zero means\n "
+   "Generate a random TCP port number from that range. A value of zero means\n"
    "let the operating system select the port number.",
    ucs_offsetof(uct_tcp_iface_config_t, port_range), UCS_CONFIG_TYPE_RANGE_SPEC},
+
+#ifdef UCT_TCP_EP_KEEPALIVE
+  {"KEEPIDLE", UCS_PP_MAKE_STRING(UCT_TCP_EP_DEFAULT_KEEPALIVE_IDLE) "s",
+   "The time the connection needs to remain idle before TCP starts sending "
+   "keepalive probes.",
+   ucs_offsetof(uct_tcp_iface_config_t, keepalive.idle),
+                UCS_CONFIG_TYPE_TIME_UNITS},
+
+  {"KEEPCNT", "3",
+   "The maximum number of keepalive probes TCP should send before "
+   "dropping the connection.",
+   ucs_offsetof(uct_tcp_iface_config_t, keepalive.cnt),
+                UCS_CONFIG_TYPE_UINT},
+
+  {"KEEPINTVL", UCS_PP_MAKE_STRING(UCT_TCP_EP_DEFAULT_KEEPALIVE_INTVL) "s",
+   "The time between individual keepalive probes.",
+   ucs_offsetof(uct_tcp_iface_config_t, keepalive.intvl),
+                UCS_CONFIG_TYPE_TIME_UNITS},
+#endif /* UCT_TCP_EP_KEEPALIVE */
 
   {NULL}
 };
@@ -132,13 +151,16 @@ static ucs_status_t uct_tcp_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
         return status;
     }
 
+    attr->ep_addr_len      = sizeof(uct_tcp_ep_addr_t);
     attr->iface_addr_len   = sizeof(in_port_t);
     attr->device_addr_len  = sizeof(struct sockaddr_in);
     attr->cap.flags        = UCT_IFACE_FLAG_CONNECT_TO_IFACE |
+                             UCT_IFACE_FLAG_CONNECT_TO_EP    |
                              UCT_IFACE_FLAG_AM_SHORT         |
                              UCT_IFACE_FLAG_AM_BCOPY         |
                              UCT_IFACE_FLAG_PENDING          |
                              UCT_IFACE_FLAG_CB_SYNC          |
+                             UCT_IFACE_FLAG_EP_CHECK         |
                              UCT_IFACE_FLAG_ERRHANDLE_PEER_FAILURE;
     attr->cap.event_flags  = UCT_IFACE_FLAG_EVENT_SEND_COMP |
                              UCT_IFACE_FLAG_EVENT_RECV      |
@@ -146,6 +168,10 @@ static ucs_status_t uct_tcp_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *
 
     attr->cap.am.max_short = am_buf_size;
     attr->cap.am.max_bcopy = am_buf_size;
+
+    if (uct_tcp_keepalive_is_enabled(iface)) {
+        attr->cap.flags   |= UCT_IFACE_FLAG_EP_KEEPALIVE;
+    }
 
     if (iface->config.zcopy.max_iov > UCT_TCP_EP_ZCOPY_SERVICE_IOV_COUNT) {
         /* AM */
@@ -284,9 +310,17 @@ uct_tcp_iface_connect_handler(int listen_fd, ucs_event_set_types_t events,
     }
 }
 
-ucs_status_t uct_tcp_iface_set_sockopt(uct_tcp_iface_t *iface, int fd)
+ucs_status_t uct_tcp_iface_set_sockopt(uct_tcp_iface_t *iface, int fd,
+                                       int set_nb)
 {
     ucs_status_t status;
+
+    if (set_nb) {
+        status = ucs_sys_fcntl_modfl(fd, O_NONBLOCK, 0);
+        if (status != UCS_OK) {
+            return status;
+        }
+    }
 
     status = ucs_socket_setopt(fd, IPPROTO_TCP, TCP_NODELAY,
                                (const void*)&iface->sockopt.nodelay,
@@ -313,8 +347,11 @@ static uct_iface_ops_t uct_tcp_iface_ops = {
     .ep_pending_purge         = uct_tcp_ep_pending_purge,
     .ep_flush                 = uct_tcp_ep_flush,
     .ep_fence                 = uct_base_ep_fence,
+    .ep_check                 = uct_tcp_ep_check,
     .ep_create                = uct_tcp_ep_create,
     .ep_destroy               = uct_tcp_ep_destroy,
+    .ep_get_address           = uct_tcp_ep_get_address,
+    .ep_connect_to_ep         = uct_tcp_ep_connect_to_ep,
     .iface_flush              = uct_tcp_iface_flush,
     .iface_fence              = uct_base_iface_fence,
     .iface_progress_enable    = uct_base_iface_progress_enable,
@@ -542,6 +579,9 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     self->sockopt.nodelay          = config->sockopt_nodelay;
     self->sockopt.sndbuf           = config->sockopt.sndbuf;
     self->sockopt.rcvbuf           = config->sockopt.rcvbuf;
+    self->config.keepalive.idle    = config->keepalive.idle;
+    self->config.keepalive.cnt     = config->keepalive.cnt;
+    self->config.keepalive.intvl   = config->keepalive.intvl;
 
     status = uct_tcp_iface_set_port_range(self, config);
     if (status != UCS_OK) {
@@ -552,6 +592,8 @@ static UCS_CLASS_INIT_FUNC(uct_tcp_iface_t, uct_md_h md, uct_worker_h worker,
     ucs_conn_match_init(&self->conn_match_ctx,
                         ucs_field_sizeof(uct_tcp_ep_t, peer_addr),
                         &uct_tcp_cm_conn_match_ops);
+    status = ucs_ptr_map_init(&self->ep_ptr_map);
+    ucs_assert_always(status == UCS_OK);
 
     if (self->config.tx_seg_size > self->config.rx_seg_size) {
         ucs_error("RX segment size (%zu) must be >= TX segment size (%zu)",
@@ -667,6 +709,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_tcp_iface_t)
 
     uct_tcp_iface_ep_list_cleanup(self);
     ucs_conn_match_cleanup(&self->conn_match_ctx);
+    ucs_ptr_map_destroy(&self->ep_ptr_map);
 
     ucs_mpool_cleanup(&self->rx_mpool, 1);
     ucs_mpool_cleanup(&self->tx_mpool, 1);
@@ -684,6 +727,7 @@ ucs_status_t uct_tcp_query_devices(uct_md_h md,
                                    uct_tl_device_resource_t **devices_p,
                                    unsigned *num_devices_p)
 {
+    uct_tcp_md_t *tcp_md = ucs_derived_of(md, uct_tcp_md_t);
     uct_tl_device_resource_t *devices, *tmp;
     static const char *netdev_dir = "/sys/class/net";
     struct dirent *entry;
@@ -727,6 +771,10 @@ ucs_status_t uct_tcp_query_devices(uct_md_h md,
             continue;
         }
 
+        if (!tcp_md->loopback_enable && ucs_netif_is_loopback(entry->d_name)) {
+            continue;
+        }
+
         tmp = ucs_realloc(devices, sizeof(*devices) * (num_devices + 1),
                           "tcp devices");
         if (tmp == NULL) {
@@ -752,6 +800,17 @@ out_closedir:
     closedir(dir);
 out:
     return status;
+}
+
+int uct_tcp_keepalive_is_enabled(uct_tcp_iface_t *iface)
+{
+#ifdef UCT_TCP_EP_KEEPALIVE
+    return (iface->config.keepalive.idle != UCS_TIME_INFINITY) &&
+           (iface->config.keepalive.cnt != 0) &&
+           (iface->config.keepalive.intvl != UCS_TIME_INFINITY);
+#else /* UCT_TCP_EP_KEEPALIVE */
+    return 0;
+#endif /* UCT_TCP_EP_KEEPALIVE */
 }
 
 UCT_TL_DEFINE(&uct_tcp_component, tcp, uct_tcp_query_devices, uct_tcp_iface_t,

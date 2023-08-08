@@ -17,12 +17,15 @@
 
 static void ucp_ep_flush_error(ucp_request_t *req, ucs_status_t status)
 {
-    if (ucp_ep_config(req->send.ep)->key.err_mode != UCP_ERR_HANDLING_MODE_PEER) {
-        ucs_error("error during flush: %s", ucs_status_string(status));
-    }
+    ucs_log_level_t level = (ucp_ep_config(req->send.ep)->key.err_mode ==
+                             UCP_ERR_HANDLING_MODE_PEER) ?
+                             UCS_LOG_LEVEL_TRACE_REQ : UCS_LOG_LEVEL_ERROR;
 
     req->status = status;
     --req->send.state.uct_comp.count;
+    ucs_log(level, "req %p: error during flush: %s, flush comp %p count reduced to %d",
+            req, ucs_status_string(status), &req->send.state.uct_comp,
+            req->send.state.uct_comp.count);
 }
 
 static int ucp_ep_flush_is_completed(ucp_request_t *req)
@@ -40,6 +43,7 @@ static void ucp_ep_flush_progress(ucp_request_t *req)
     ucs_status_t status;
     uct_ep_h uct_ep;
     int diff;
+    ucp_lane_map_t destroyed_lanes;
 
     /* If the number of lanes changed since flush operation was submitted, adjust
      * the number of expected completions */
@@ -54,10 +58,24 @@ static void ucp_ep_flush_progress(ucp_request_t *req)
                           ep, diff);
             req->send.state.uct_comp.count += diff;
         } else {
-            /* If we have less lanes, it means we are in error flow and
-             * ucp_worker_set_ep_failed() was completed, so we should have
-             * completed the flush on all lanes.
+            /* If we have less lanes, it means we are in error flow:
+             * - if count == 0, we have completed the flush on all lanes
+             * - otherwise, flush progress was re-scheduled from flush progress
+             *   pending right after ucp_worker_iface_err_handle_progress(),
+             *   so remove destroyed/failed lanes from started_lanes and count
+             *   them completed.
              */
+            ucs_assert(ep->flags & UCP_EP_FLAG_FAILED);
+            if (req->send.state.uct_comp.count > 0) {
+                destroyed_lanes = req->send.flush.started_lanes & ~all_lanes;
+
+                ucs_debug("req %p: lanes 0x%x were destroyed so reducing comp "
+                          "count by %d", req, destroyed_lanes,
+                          ucs_popcount(destroyed_lanes));
+                req->send.flush.started_lanes  &= ~destroyed_lanes;
+                req->send.state.uct_comp.count -= ucs_popcount(destroyed_lanes);
+            }
+
             ucs_assertv(req->send.state.uct_comp.count == 0,
                         "uct_comp.count=%d num_lanes=%d",
                         req->send.state.uct_comp.count, num_lanes);
@@ -115,7 +133,7 @@ static void ucp_ep_flush_progress(ucp_request_t *req)
             }
         } else {
             ucp_ep_flush_error(req, status);
-            break;
+            req->send.flush.started_lanes |= UCS_BIT(lane);
         }
     }
 
@@ -289,8 +307,7 @@ void ucp_ep_flush_remote_completed(ucp_request_t *req)
     }
 }
 
-ucs_status_ptr_t ucp_ep_flush_internal(ucp_ep_h ep, unsigned uct_flags,
-                                       unsigned req_flags,
+ucs_status_ptr_t ucp_ep_flush_internal(ucp_ep_h ep, unsigned req_flags,
                                        const ucp_request_param_t *param,
                                        ucp_request_t *worker_req,
                                        ucp_request_callback_t flushed_cb,
@@ -300,10 +317,6 @@ ucs_status_ptr_t ucp_ep_flush_internal(ucp_ep_h ep, unsigned uct_flags,
     ucp_request_t *req;
 
     ucs_debug("%s ep %p", debug_name, ep);
-
-    if (ep->flags & UCP_EP_FLAG_FAILED) {
-        return NULL;
-    }
 
     req = ucp_request_get_param(ep->worker, param,
                                 {return UCS_STATUS_PTR(UCS_ERR_NO_MEMORY);});
@@ -318,11 +331,11 @@ ucs_status_ptr_t ucp_ep_flush_internal(ucp_ep_h ep, unsigned uct_flags,
      */
     req->flags                      = req_flags;
     req->status                     = UCS_OK;
+    req->super_req                  = worker_req;
     req->send.ep                    = ep;
     req->send.flush.flushed_cb      = flushed_cb;
     req->send.flush.prog_id         = UCS_CALLBACKQ_ID_NULL;
-    req->send.flush.uct_flags       = uct_flags;
-    req->send.flush.worker_req      = worker_req;
+    req->send.flush.uct_flags       = UCT_FLUSH_FLAG_LOCAL;
     req->send.flush.sw_started      = 0;
     req->send.flush.sw_done         = 0;
     req->send.flush.num_lanes       = ucp_ep_num_lanes(ep);
@@ -373,9 +386,8 @@ UCS_PROFILE_FUNC(ucs_status_ptr_t, ucp_ep_flush_nbx, (ep, param),
 
     UCP_WORKER_THREAD_CS_ENTER_CONDITIONAL(ep->worker);
 
-    request = ucp_ep_flush_internal(ep, UCT_FLUSH_FLAG_LOCAL, 0, param,
-                                    NULL, ucp_ep_flushed_callback,
-                                    "flush_nbx");
+    request = ucp_ep_flush_internal(ep, 0, param, NULL,
+                                    ucp_ep_flushed_callback, "flush_nbx");
 
     UCP_WORKER_THREAD_CS_EXIT_CONDITIONAL(ep->worker);
 
@@ -431,7 +443,7 @@ static void ucp_worker_flush_complete_one(ucp_request_t *req, ucs_status_t statu
 
 static void ucp_worker_flush_ep_flushed_cb(ucp_request_t *req)
 {
-    ucp_worker_flush_complete_one(req->send.flush.worker_req, UCS_OK, 0);
+    ucp_worker_flush_complete_one(req->super_req, UCS_OK, 0);
     ucp_request_put(req);
 }
 
@@ -471,15 +483,15 @@ static unsigned ucp_worker_flush_progress(void *arg)
         req->flush_worker.next_ep = ucs_list_next(&next_ep->ep_list,
                                                   ucp_ep_ext_gen_t, ep_list);
 
-        ep_flush_request = ucp_ep_flush_internal(ep, UCT_FLUSH_FLAG_LOCAL,
-                                                 UCP_REQUEST_FLAG_RELEASED,
+        ep_flush_request = ucp_ep_flush_internal(ep, UCP_REQUEST_FLAG_RELEASED,
                                                  &ucp_request_null_param, req,
                                                  ucp_worker_flush_ep_flushed_cb,
                                                  "flush_worker");
         if (UCS_PTR_IS_ERR(ep_flush_request)) {
             /* endpoint flush resulted in an error */
             status = UCS_PTR_STATUS(ep_flush_request);
-            ucs_warn("ucp_ep_flush_internal() failed: %s", ucs_status_string(status));
+            ucs_diag("ucp_ep_flush_internal() failed: %s",
+                     ucs_status_string(status));
         } else if (ep_flush_request != NULL) {
             /* endpoint flush started, increment refcount */
             ++req->flush_worker.comp_count;
@@ -575,8 +587,7 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_ep_flush, (ep), ucp_ep_h ep)
 
     UCP_WORKER_THREAD_CS_ENTER_CONDITIONAL(ep->worker);
 
-    request = ucp_ep_flush_internal(ep, UCT_FLUSH_FLAG_LOCAL, 0,
-                                    &ucp_request_null_param, NULL,
+    request = ucp_ep_flush_internal(ep, 0, &ucp_request_null_param, NULL,
                                     ucp_ep_flushed_callback, "flush");
     status = ucp_flush_wait(ep->worker, request);
 

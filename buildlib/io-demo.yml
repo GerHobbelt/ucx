@@ -18,7 +18,7 @@ jobs:
     pool:
       name: MLNX
       demands:
-        - ucx_roce -equals yes
+        - ucx_iodemo -equals yes
 
     steps:
       # address permissions issue when some files created as read-only
@@ -45,7 +45,7 @@ jobs:
     pool:
       name: MLNX
       demands:
-        - ucx_roce -equals yes
+        - ucx_iodemo -equals yes
 
     strategy:
       matrix:
@@ -67,28 +67,6 @@ jobs:
 
       - bash: |
           set -eEx
-          # set UCX environment variables
-          export UCX_SOCKADDR_CM_ENABLE=y
-          # TODO get hostname of 'ucx-roce-client' SSH service endpoint, and run on it
-          $(workspace)/../test/apps/iodemo/run_io_demo.sh \
-              -H swx-rdmz-ucx-roce-01,swx-rdmz-ucx-roce-02 \
-              --tasks-per-node 1 \
-              --duration 60 \
-              -v \
-              --num-clients 1 \
-              --num-servers 1 \
-              --map-by slot \
-              $(workspace)/../test/apps/iodemo/io_demo \
-                  -d 512:524288 \
-                  -o read,write \
-                  -i 0 \
-                  -w 16 \
-                  -t 10
-        displayName: Launch with run_io_demo.sh
-        timeoutInMinutes: 2
-
-      - bash: |
-          set -eEx
           source ./buildlib/az-helpers.sh
           ./buildlib/az-network-corrupter.sh \
             initial_delay=$(initial_delay) \
@@ -96,7 +74,10 @@ jobs:
             downtime=$(downtime) \
             uptime=$(uptime) \
             |& add_timestamp &>corrupter.log &
-
+          while ! pgrep -u "$USER" -f 'network-corrupter'
+          do
+            sleep 1
+          done
           pgrep -u "$USER" -f 'network-corrupter'
           corrupter_pid=$(pgrep -u "$USER" -f 'network-corrupter')
           echo "corrupter_pid=$corrupter_pid"
@@ -106,41 +87,51 @@ jobs:
 
       - bash: |
           set -eEx
-          source ./buildlib/az-helpers.sh
-          ./buildlib/az-io_demo.sh workspace=$(workspace)
-        displayName: Start server
-        name: server
-        timeoutInMinutes: 5
-
-      - task: SSH@0
-        inputs:
-          sshEndpoint: ucx-roce-client
-          runOptions: inline
-          inline: |
-            set -eEx
-            $(workspace)/az-io_demo.sh \
-                workspace=$(workspace) \
-                server_ip=$(server_ip)
-                duration=${{ parameters.test_duration }}
-          failOnStdErr: false
-        displayName: Test
-        timeoutInMinutes: ${{ parameters.test_duration }}
+          # set UCX environment variables
+          export UCX_SOCKADDR_CM_ENABLE=y
+          export UCX_NET_DEVICES=$(ibdev2netdev | sed -ne 's/\(\w*\) port \([0-9]\) ==> '${roce_iface}' .*/\1:\2/p')
+          $(workspace)/../test/apps/iodemo/run_io_demo.sh \
+              -H $(agent_hosts) \
+              --tasks-per-node 1 \
+              --duration 60 \
+              -v \
+              --num-clients 1 \
+              --num-servers 1 \
+              --map-by slot \
+              -i $(roce_iface) \
+              $(workspace)/../test/apps/iodemo/io_demo \
+                  -d 512:524288 \
+                  -o read,write \
+                  -i 0 \
+                  -w 16 \
+                  -t 10
+        displayName: Launch with run_io_demo.sh (tag)
+        timeoutInMinutes: 2
 
       - bash: |
           set -eEx
-          cd $(workspace)
-          pid=$(server_pid)
-          echo "Stopping the server, PID=${pid}"
-          if ! kill ${pid}; then
-            echo "##vso[task.logissue type=error]Can't stop server: process doesn't exist"
-            echo "##vso[task.complete result=Failed;]"
-          else
-            echo "Server stopped successfully"
-          fi
-          cat $(workspace)/server.log
-        displayName: Kill the server
-        condition: always()
-        timeoutInMinutes: 5
+          # set UCX environment variables
+          export UCX_SOCKADDR_CM_ENABLE=y
+          export UCX_NET_DEVICES=$(ibdev2netdev | sed -ne 's/\(\w*\) port \([0-9]\) ==> '${roce_iface}' .*/\1:\2/p')
+          $(workspace)/../test/apps/iodemo/run_io_demo.sh \
+              -H $(agent_hosts) \
+              --tasks-per-node 1 \
+              --duration 60 \
+              -v \
+              --num-clients 1 \
+              --num-servers 1 \
+              --map-by slot \
+              -i $(roce_iface) \
+              $(workspace)/../test/apps/iodemo/io_demo \
+                  -d 512:524288 \
+                  -o read,write \
+                  -i 0 \
+                  -w 16 \
+                  -t 10 \
+                  -q \
+                  -A
+        displayName: Launch with run_io_demo.sh (active message)
+        timeoutInMinutes: 2
 
       - bash: |
           set -eEx

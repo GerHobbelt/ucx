@@ -91,6 +91,7 @@ unsigned uct_rc_mlx5_iface_srq_post_recv(uct_rc_mlx5_iface_common_t *iface)
                       sizeof(struct mlx5_wqe_srq_next_seg));
 
     ucs_assert(UCS_CIRCULAR_COMPARE16(srq->ready_idx, <=, srq->free_idx));
+    ucs_assert(rc_iface->rx.srq.available > 0);
 
     wqe_index = srq->ready_idx;
     for (;;) {
@@ -140,6 +141,12 @@ out:
 
 void uct_rc_mlx5_iface_common_prepost_recvs(uct_rc_mlx5_iface_common_t *iface)
 {
+    /* prepost recvs only if quota available (recvs were not preposted
+     * before) */ 
+    if (iface->super.rx.srq.quota == 0) {
+        return;
+    }
+
     iface->super.rx.srq.available = iface->super.rx.srq.quota;
     iface->super.rx.srq.quota     = 0;
     uct_rc_mlx5_iface_srq_post_recv(iface);
@@ -202,6 +209,7 @@ uct_rc_mlx5_devx_create_cmd_qp(uct_rc_mlx5_iface_common_t *iface)
 
     ucs_assert(iface->tm.cmd_wq.super.super.type == UCT_IB_MLX5_OBJ_TYPE_LAST);
 
+    attr.super.qp_type          = IBV_QPT_RC;
     attr.super.cap.max_send_wr  = iface->tm.cmd_qp_len;
     attr.super.cap.max_send_sge = 1;
     attr.super.ibv.pd           = md->super.pd;
@@ -416,7 +424,8 @@ void uct_rc_mlx5_iface_common_tag_cleanup(uct_rc_mlx5_iface_common_t *iface)
     }
 
     uct_ib_mlx5_destroy_qp(md, &iface->tm.cmd_wq.super.super);
-    uct_ib_mlx5_txwq_cleanup(&iface->tm.cmd_wq.super);
+    uct_ib_mlx5_qp_mmio_cleanup(&iface->tm.cmd_wq.super.super,
+                                iface->tm.cmd_wq.super.reg);
     ucs_free(iface->tm.list);
     ucs_free(iface->tm.cmd_wq.ops);
     uct_rc_mlx5_tag_cleanup(iface);
@@ -458,6 +467,7 @@ void uct_rc_mlx5_iface_fill_attr(uct_rc_mlx5_iface_common_t *iface,
         break;
     case UCT_IB_MLX5_OBJ_TYPE_DEVX:
         uct_rc_iface_fill_attr(&iface->super, &qp_attr->super, max_send_wr, NULL);
+        qp_attr->mmio_mode = iface->tx.mmio_mode;
         break;
     case UCT_IB_MLX5_OBJ_TYPE_LAST:
         break;

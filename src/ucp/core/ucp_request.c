@@ -45,7 +45,7 @@ ucs_status_t ucp_tag_recv_request_test(void *request, ucp_tag_recv_info_t *info)
     ucs_status_t  status = ucp_request_check_status(request);
 
     if (status != UCS_INPROGRESS) {
-        ucs_assert(req->flags & UCP_REQUEST_FLAG_RECV);
+        ucs_assert(req->flags & UCP_REQUEST_FLAG_RECV_TAG);
         *info = req->recv.tag.info;
     }
 
@@ -312,7 +312,7 @@ ucs_status_t ucp_request_test(void *request, ucp_tag_recv_info_t *info)
     ucp_request_t *req = (ucp_request_t*)request - 1;
 
     if (req->flags & UCP_REQUEST_FLAG_COMPLETED) {
-        if (req->flags & UCP_REQUEST_FLAG_RECV) {
+        if (req->flags & UCP_REQUEST_FLAG_RECV_TAG) {
             *info = req->recv.tag.info;
         }
         ucs_assert(req->status != UCS_INPROGRESS);
@@ -330,12 +330,20 @@ void ucp_request_init_multi_proto(ucp_request_t *req,
 
     if (req->flags & (UCP_REQUEST_FLAG_SEND_TAG |
                       UCP_REQUEST_FLAG_SEND_AM)) {
-        req->send.msg_proto.message_id  = req->send.ep->worker->am_message_id++;
-        req->send.msg_proto.am_bw_index = 0;
+        req->send.msg_proto.message_id = req->send.ep->worker->am_message_id++;
+        req->send.am_bw_index          = 0;
     }
 
     req->send.pending_lane = UCP_NULL_LANE;
     UCS_PROFILE_REQUEST_EVENT(req, multi_func_str, req->send.length);
+}
+
+static UCS_F_ALWAYS_INLINE void ucp_send_request_init_id(ucp_request_t *req)
+{
+    if (req->flags & UCP_REQUEST_FLAG_SYNC) {
+        ucs_assert(req->flags & UCP_REQUEST_FLAG_SEND_TAG);
+        ucp_send_request_set_id(req);
+    }
 }
 
 ucs_status_t
@@ -366,6 +374,8 @@ ucp_request_send_start(ucp_request_t *req, ssize_t max_short,
             ucp_request_init_multi_proto(req, proto->bcopy_multi,
                                          "start_bcopy_multi");
         }
+
+        ucp_send_request_init_id(req);
         return UCS_OK;
     } else if (length < zcopy_max) {
         /* zcopy */
@@ -396,6 +406,8 @@ ucp_request_send_start(ucp_request_t *req, ssize_t max_short,
             req->send.uct.func = proto->zcopy_single;
             UCS_PROFILE_REQUEST_EVENT(req, "start_zcopy_single", req->send.length);
         }
+
+        ucp_send_request_init_id(req);
         return UCS_OK;
     }
 

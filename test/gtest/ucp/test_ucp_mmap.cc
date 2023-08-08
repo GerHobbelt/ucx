@@ -17,23 +17,12 @@ extern "C" {
 
 class test_ucp_mmap : public ucp_test {
 public:
-    static ucp_params_t get_ctx_params() {
-        ucp_params_t params = ucp_test::get_ctx_params();
-        params.features |= UCP_FEATURE_RMA;
-        return params;
-    }
-
-    static std::vector<ucp_test_param>
-    enum_test_params(const ucp_params_t& ctx_params, const std::string& name,
-                     const std::string& test_case_name, const std::string& tls)
+    static void
+    get_test_variants(std::vector<ucp_test_variant>& variants)
     {
-        std::vector<ucp_test_param> result;
-        generate_test_params_variant(ctx_params, name,
-                                     test_case_name, tls, 0, result);
-        generate_test_params_variant(ctx_params, name,
-                                     test_case_name + "/map_nb",
-                                     tls, UCP_MEM_MAP_NONBLOCK, result);
-        return result;
+        add_variant_with_value(variants, UCP_FEATURE_RMA, 0, "");
+        add_variant_with_value(variants, UCP_FEATURE_RMA, UCP_MEM_MAP_NONBLOCK,
+                               "map_nb");
     }
 
     virtual void init() {
@@ -42,7 +31,22 @@ public:
     }
 
     unsigned mem_map_flags() const {
-        return GetParam().variant;
+        return get_variant_value();
+    }
+
+    bool is_tl_rdma() {
+        /* Return true if the selected transport is expected to have remote
+         * registered memory access capabilities. If we have both shared memory
+         * and rdma options, it's possible that only shared memory is actually
+         * used, so can't assume it.
+         */
+        return (has_transport("dc_x") || has_transport("rc_x") ||
+                has_transport("rc_v") || has_transport("ib")) &&
+               !is_tl_shm();
+    }
+
+    bool is_tl_shm() {
+        return has_transport("shm");
     }
 
 protected:
@@ -50,7 +54,8 @@ protected:
     bool resolve_amo(entity *e, ucp_rkey_h rkey);
     bool resolve_rma_bw(entity *e, ucp_rkey_h rkey);
     void test_length0(unsigned flags);
-    void test_rkey_management(entity *e, ucp_mem_h memh, bool is_dummy);
+    void test_rkey_management(entity *e, ucp_mem_h memh, bool is_dummy,
+                              bool expect_rma_offload);
 };
 
 bool test_ucp_mmap::resolve_rma(entity *e, ucp_rkey_h rkey)
@@ -109,7 +114,8 @@ bool test_ucp_mmap::resolve_rma_bw(entity *e, ucp_rkey_h rkey)
     }
 }
 
-void test_ucp_mmap::test_rkey_management(entity *e, ucp_mem_h memh, bool is_dummy)
+void test_ucp_mmap::test_rkey_management(entity *e, ucp_mem_h memh,
+                                         bool is_dummy, bool expect_rma_offload)
 {
     size_t rkey_size;
     void *rkey_buffer;
@@ -119,7 +125,7 @@ void test_ucp_mmap::test_rkey_management(entity *e, ucp_mem_h memh, bool is_dumm
      * can be inaccessible remotely. But it should always be possible
      * to pack/unpack a key, even if empty. */
     status = ucp_rkey_pack(e->ucph(), memh, &rkey_buffer, &rkey_size);
-    if (status == UCS_ERR_UNSUPPORTED && !is_dummy) {
+    if ((status == UCS_ERR_UNSUPPORTED) && !is_dummy) {
         return;
     }
     ASSERT_UCS_OK(status);
@@ -129,7 +135,7 @@ void test_ucp_mmap::test_rkey_management(entity *e, ucp_mem_h memh, bool is_dumm
     /* Unpack remote key buffer */
     ucp_rkey_h rkey;
     status = ucp_ep_rkey_unpack(e->ep(), rkey_buffer, &rkey);
-    if (status == UCS_ERR_UNREACHABLE && !is_dummy) {
+    if ((status == UCS_ERR_UNREACHABLE) && !is_dummy) {
         ucp_rkey_buffer_release(rkey_buffer);
         return;
     }
@@ -154,6 +160,14 @@ void test_ucp_mmap::test_rkey_management(entity *e, ucp_mem_h memh, bool is_dumm
         case 2:
             EXPECT_EQ(have_rma_bw, resolve_rma_bw(e, rkey));
             break;
+        }
+    }
+
+    if (expect_rma_offload) {
+        if (is_dummy) {
+            EXPECT_EQ(&ucp_rma_sw_proto, rkey->cache.rma_proto);
+        } else {
+            EXPECT_EQ(&ucp_rma_basic_proto, rkey->cache.rma_proto);
         }
     }
 
@@ -194,7 +208,8 @@ UCS_TEST_P(test_ucp_mmap, alloc) {
         ASSERT_UCS_OK(status);
 
         is_dummy = (size == 0);
-        test_rkey_management(&sender(), memh, is_dummy);
+        test_rkey_management(&sender(), memh, is_dummy,
+                             is_tl_rdma() || is_tl_shm());
 
         status = ucp_mem_unmap(sender().ucph(), memh);
         ASSERT_UCS_OK(status);
@@ -228,7 +243,7 @@ UCS_TEST_P(test_ucp_mmap, reg) {
         ASSERT_UCS_OK(status);
 
         is_dummy = (size == 0);
-        test_rkey_management(&sender(), memh, is_dummy);
+        test_rkey_management(&sender(), memh, is_dummy, is_tl_rdma());
 
         status = ucp_mem_unmap(sender().ucph(), memh);
         ASSERT_UCS_OK(status);
@@ -268,7 +283,10 @@ UCS_TEST_P(test_ucp_mmap, reg_mem_type) {
         ASSERT_UCS_OK(status);
 
         is_dummy = (size == 0);
-        test_rkey_management(&sender(), memh, is_dummy);
+        test_rkey_management(&sender(), memh, is_dummy,
+                             is_tl_rdma() &&
+                             !UCP_MEM_IS_CUDA_MANAGED(alloc_mem_type) &&
+                             !UCP_MEM_IS_ROCM_MANAGED(alloc_mem_type));
 
         status = ucp_mem_unmap(sender().ucph(), memh);
         ASSERT_UCS_OK(status);
@@ -303,8 +321,12 @@ void test_ucp_mmap::test_length0(unsigned flags)
     status = ucp_mem_map(sender().ucph(), &params, &memh[1]);
     ASSERT_UCS_OK(status);
 
+    bool expect_rma_offload = is_tl_rdma() ||
+                              ((flags & UCP_MEM_MAP_ALLOCATE) &&
+                               is_tl_shm());
+
     for (i = 0; i < buf_num; i++) {
-        test_rkey_management(&sender(), memh[i], true);
+        test_rkey_management(&sender(), memh[i], true, expect_rma_offload);
         status = ucp_mem_unmap(sender().ucph(), memh[i]);
         ASSERT_UCS_OK(status);
     }
@@ -356,7 +378,7 @@ UCS_TEST_P(test_ucp_mmap, alloc_advise) {
     ASSERT_UCS_OK(status);
 
     is_dummy = (size == 0);
-    test_rkey_management(&sender(), memh, is_dummy);
+    test_rkey_management(&sender(), memh, is_dummy, is_tl_rdma() || is_tl_shm());
 
     status = ucp_mem_unmap(sender().ucph(), memh);
     ASSERT_UCS_OK(status);
@@ -402,7 +424,7 @@ UCS_TEST_P(test_ucp_mmap, reg_advise) {
     status = ucp_mem_advise(sender().ucph(), memh, &advise_params); 
     ASSERT_UCS_OK(status);
     is_dummy = (size == 0);
-    test_rkey_management(&sender(), memh, is_dummy);
+    test_rkey_management(&sender(), memh, is_dummy, is_tl_rdma());
 
     status = ucp_mem_unmap(sender().ucph(), memh);
     ASSERT_UCS_OK(status);
@@ -436,7 +458,7 @@ UCS_TEST_P(test_ucp_mmap, fixed) {
         EXPECT_GE(memh->length, size);
 
         is_dummy = (size == 0);
-        test_rkey_management(&sender(), memh, is_dummy);
+        test_rkey_management(&sender(), memh, is_dummy, is_tl_rdma());
 
         status = ucp_mem_unmap(sender().ucph(), memh);
         ASSERT_UCS_OK(status);

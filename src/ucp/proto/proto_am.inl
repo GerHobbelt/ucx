@@ -20,6 +20,7 @@
 
 #define UCP_STATUS_PENDING_SWITCH (UCS_ERR_LAST - 1)
 
+
 typedef void (*ucp_req_complete_func_t)(ucp_request_t *req, ucs_status_t status);
 
 
@@ -110,7 +111,7 @@ ucs_status_t ucp_do_am_bcopy_multi(uct_pending_req_t *self, uint8_t am_id_first,
             ucs_assertv(req->send.state.dt.offset <= req->send.length,
                         "offset=%zd length=%zu",
                         req->send.state.dt.offset, req->send.length);
-            ucs_assert(state.offset < req->send.state.dt.offset);
+
             /* If the last segment was sent, return UCS_OK,
              * otherwise - UCS_INPROGRESS */
             if (enable_am_bw) {
@@ -518,22 +519,32 @@ ucp_proto_get_short_max(const ucp_request_t *req,
 }
 
 static UCS_F_ALWAYS_INLINE ucp_request_t*
-ucp_proto_ssend_ack_request_alloc(ucp_worker_h worker, ucs_ptr_map_key_t ep_id)
+ucp_proto_ssend_ack_request_alloc(ucp_worker_h worker, ucp_ep_h ep)
 {
-    ucp_request_t *req;
-
-    req = ucp_request_get(worker);
+    ucp_request_t *req = ucp_request_get(worker);
     if (req == NULL) {
+        ucs_error("failed to allocate UCP request");
         return NULL;
     }
 
     req->flags              = 0;
-    req->send.ep            = ucp_worker_get_ep_by_id(worker, ep_id);
+    req->send.ep            = ep;
     req->send.uct.func      = ucp_proto_progress_am_single;
     req->send.proto.comp_cb = ucp_request_put;
     req->send.proto.status  = UCS_OK;
 
     return req;
+}
+
+static UCS_F_ALWAYS_INLINE ucs_status_t
+ucp_am_short_handle_status_from_pending(ucp_request_t *req, ucs_status_t status)
+{
+    if (ucs_unlikely(status == UCS_ERR_NO_RESOURCE)) {
+        return UCS_ERR_NO_RESOURCE;
+    }
+
+    ucp_request_complete_send(req, status);
+    return UCS_OK;
 }
 
 static UCS_F_ALWAYS_INLINE ucs_status_t
@@ -545,9 +556,7 @@ ucp_am_bcopy_handle_status_from_pending(uct_pending_req_t *self, int multi,
     if (multi) {
         if (status == UCS_INPROGRESS) {
             return UCS_INPROGRESS;
-        }
-
-        if (ucs_unlikely(status == UCP_STATUS_PENDING_SWITCH)) {
+        } else if (ucs_unlikely(status == UCP_STATUS_PENDING_SWITCH)) {
             return UCS_OK;
         }
     } else {

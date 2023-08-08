@@ -644,13 +644,6 @@ static ucs_status_t uct_ud_mlx5_iface_arm_cq(uct_ib_iface_t *ib_iface,
 #endif
 }
 
-static ucs_status_t uct_ud_mlx5_ep_set_failed(uct_ib_iface_t *iface,
-                                              uct_ep_h ep, ucs_status_t status)
-{
-    return uct_set_ep_failed(&UCS_CLASS_NAME(uct_ud_mlx5_ep_t), ep,
-                             &iface->super.super, status);
-}
-
 static void uct_ud_mlx5_iface_event_cq(uct_ib_iface_t *ib_iface,
                                        uct_ib_dir_t dir)
 {
@@ -687,6 +680,7 @@ static void uct_ud_mlx5_iface_handle_failure(uct_ib_iface_t *ib_iface, void *arg
 {
     uct_ud_mlx5_iface_t *iface = ucs_derived_of(ib_iface, uct_ud_mlx5_iface_t);
 
+    ucs_assert(status != UCS_ERR_ENDPOINT_TIMEOUT);
     /* Local side failure - treat as fatal */
     uct_ib_mlx5_completion_with_err(ib_iface, arg, &iface->tx.wq,
                                     UCS_LOG_LEVEL_FATAL);
@@ -725,7 +719,6 @@ static uct_ud_iface_ops_t uct_ud_mlx5_iface_ops = {
     .arm_cq                   = uct_ud_mlx5_iface_arm_cq,
     .event_cq                 = uct_ud_mlx5_iface_event_cq,
     .handle_failure           = uct_ud_mlx5_iface_handle_failure,
-    .set_ep_failed            = uct_ud_mlx5_ep_set_failed,
     },
     .async_progress           = uct_ud_mlx5_iface_async_progress,
     .send_ctl                 = uct_ud_mlx5_ep_send_ctl,
@@ -760,6 +753,13 @@ static UCS_CLASS_INIT_FUNC(uct_ud_mlx5_iface_t,
                               md, worker, params, &config->super, &init_attr);
 
     self->super.config.max_inline = uct_ud_mlx5_max_inline();
+
+    status = uct_ib_mlx5_iface_select_sl(&self->super.super,
+                                         &config->mlx5_common,
+                                         &config->super.super);
+    if (status != UCS_OK) {
+        return status;
+    }
 
     status = uct_ib_mlx5_get_cq(self->super.super.cq[UCT_IB_DIR_TX], &self->cq[UCT_IB_DIR_TX]);
     if (status != UCS_OK) {
@@ -814,7 +814,7 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ud_mlx5_iface_t)
     ucs_trace_func("");
     uct_ud_iface_remove_async_handlers(&self->super);
     uct_ud_enter(&self->super);
-    uct_ib_mlx5_txwq_cleanup(&self->tx.wq);
+    uct_ib_mlx5_qp_mmio_cleanup(&self->tx.wq.super, self->tx.wq.reg);
     uct_ud_leave(&self->super);
 }
 

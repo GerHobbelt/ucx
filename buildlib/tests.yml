@@ -24,6 +24,7 @@ jobs:
         clean: true
 
       - bash: |
+          source ./buildlib/az-helpers.sh
           ./contrib/test_jenkins.sh
         displayName: Run ./contrib/test_jenkins.sh
         env:
@@ -37,4 +38,6 @@ jobs:
           EXECUTOR_NUMBER: $(AZP_AGENT_ID)
           RUN_TESTS: yes
           JENKINS_TEST_PERF: ${{ parameters.test_perf }}
+          JENKINS_NO_VALGRIND: ${{ parameters.valgrind_disable }}
+          RUNNING_IN_AZURE: yes
 

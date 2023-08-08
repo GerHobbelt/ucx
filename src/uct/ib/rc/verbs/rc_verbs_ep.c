@@ -383,15 +383,13 @@ ucs_status_t uct_rc_verbs_ep_atomic_cswap64(uct_ep_h tl_ep, uint64_t compare, ui
                                   remote_addr, rkey, comp);
 }
 
-static ucs_status_t uct_rc_verbs_ep_post_flush(uct_rc_verbs_ep_t *ep)
+static void uct_rc_verbs_ep_post_flush(uct_rc_verbs_ep_t *ep, int send_flags)
 {
     uct_rc_verbs_iface_t *iface = ucs_derived_of(ep->super.super.super.iface,
                                                  uct_rc_verbs_iface_t);
     struct ibv_send_wr wr;
     struct ibv_sge sge;
     int inl_flag;
-
-    UCT_RC_CHECK_RES(&iface->super, &ep->super);
 
     /*
      * Send small RDMA_WRITE as a flush operation
@@ -409,22 +407,16 @@ static ucs_status_t uct_rc_verbs_ep_post_flush(uct_rc_verbs_ep_t *ep)
     inl_flag               = (iface->config.max_inline >= sge.length) ?
                              IBV_SEND_INLINE : 0;
 
-    uct_rc_verbs_ep_post_send(iface, ep, &wr, inl_flag | IBV_SEND_SIGNALED, 1);
-    return UCS_OK;
+    uct_rc_verbs_ep_post_send(iface, ep, &wr, inl_flag | send_flags, 1);
 }
 
 ucs_status_t uct_rc_verbs_ep_flush(uct_ep_h tl_ep, unsigned flags,
                                    uct_completion_t *comp)
 {
     uct_rc_verbs_iface_t *iface = ucs_derived_of(tl_ep->iface, uct_rc_verbs_iface_t);
-    uct_rc_verbs_ep_t *ep = ucs_derived_of(tl_ep, uct_rc_verbs_ep_t);
+    uct_rc_verbs_ep_t *ep       = ucs_derived_of(tl_ep, uct_rc_verbs_ep_t);
+    int already_canceled        = ep->super.flags & UCT_RC_EP_FLAG_FLUSH_CANCEL;
     ucs_status_t status;
-
-    if (ucs_unlikely(flags & UCT_FLUSH_FLAG_CANCEL)) {
-        uct_ep_pending_purge(&ep->super.super.super, NULL, 0);
-        uct_rc_verbs_ep_handle_failure(ep, UCS_ERR_CANCELED);
-        return UCS_OK;
-    }
 
     status = uct_rc_ep_flush(&ep->super, iface->config.tx_max_wr, flags);
     if (status != UCS_INPROGRESS) {
@@ -432,7 +424,12 @@ ucs_status_t uct_rc_verbs_ep_flush(uct_ep_h tl_ep, unsigned flags,
     }
 
     if (uct_rc_txqp_unsignaled(&ep->super.txqp) != 0) {
-        status = uct_rc_verbs_ep_post_flush(ep);
+        UCT_RC_CHECK_RES(&iface->super, &ep->super);
+        uct_rc_verbs_ep_post_flush(ep, IBV_SEND_SIGNALED);
+    }
+
+    if (ucs_unlikely((flags & UCT_FLUSH_FLAG_CANCEL) && !already_canceled)) {
+        status = uct_ib_modify_qp(ep->qp, IBV_QPS_ERR);
         if (status != UCS_OK) {
             return status;
         }
@@ -447,6 +444,13 @@ ucs_status_t uct_rc_verbs_ep_fence(uct_ep_h tl_ep, unsigned flags)
     uct_rc_verbs_ep_t *ep = ucs_derived_of(tl_ep, uct_rc_verbs_ep_t);
 
     return uct_rc_ep_fence(tl_ep, &ep->fi, 1);
+}
+
+void uct_rc_verbs_ep_post_check(uct_ep_h tl_ep)
+{
+    uct_rc_verbs_ep_t *ep = ucs_derived_of(tl_ep, uct_rc_verbs_ep_t);
+
+    uct_rc_verbs_ep_post_flush(ep, 0);
 }
 
 ucs_status_t uct_rc_verbs_ep_fc_ctrl(uct_ep_t *tl_ep, unsigned op,
@@ -490,21 +494,6 @@ ucs_status_t uct_rc_verbs_ep_fc_ctrl(uct_ep_t *tl_ep, unsigned op,
 
     uct_rc_verbs_ep_post_send(iface, ep, &fc_wr, flags, INT_MAX);
     return UCS_OK;
-}
-
-ucs_status_t uct_rc_verbs_ep_handle_failure(uct_rc_verbs_ep_t *ep,
-                                            ucs_status_t status)
-{
-    uct_rc_iface_t *iface = ucs_derived_of(ep->super.super.super.iface,
-                                           uct_rc_iface_t);
-
-    iface->tx.cq_available += ep->txcnt.pi - ep->txcnt.ci;
-    /* Reset CI to prevent cq_available overrun on ep_destroy */
-    ep->txcnt.ci = ep->txcnt.pi;
-    uct_rc_txqp_purge_outstanding(iface, &ep->super.txqp, status, 0);
-
-    return iface->super.ops->set_ep_failed(&iface->super, &ep->super.super.super,
-                                           status);
 }
 
 ucs_status_t uct_rc_verbs_ep_get_address(uct_ep_h tl_ep, uct_ep_addr_t *addr)
@@ -570,6 +559,7 @@ ucs_status_t uct_rc_verbs_ep_connect_to_ep(uct_ep_h tl_ep,
         ep->super.atomic_mr_offset = 0;
     }
 
+    ep->super.flags |= UCT_RC_EP_FLAG_CONNECTED;
     return UCS_OK;
 }
 
@@ -594,11 +584,9 @@ UCS_CLASS_INIT_FUNC(uct_rc_verbs_ep_t, const uct_ep_params_t *params)
         goto err_qp_cleanup;
     }
 
-    status = uct_ib_device_async_event_register(
-            &md->dev,
-            IBV_EVENT_QP_LAST_WQE_REACHED,
-            self->qp->qp_num,
-            &iface->super.super.super.worker->super.progress_q);
+    status = uct_ib_device_async_event_register(&md->dev,
+                                                IBV_EVENT_QP_LAST_WQE_REACHED,
+                                                self->qp->qp_num);
     if (status != UCS_OK) {
         goto err_qp_cleanup;
     }
@@ -616,12 +604,33 @@ err:
     return status;
 }
 
-static UCS_CLASS_CLEANUP_FUNC(uct_rc_verbs_ep_t)
+typedef struct {
+    uct_rc_ep_cleanup_ctx_t    super;
+    struct ibv_qp              *qp;
+} uct_rc_verbs_ep_cleanup_ctx_t;
+
+void uct_rc_verbs_ep_cleanup_qp(uct_ib_async_event_wait_t *wait_ctx)
+{
+    uct_rc_verbs_ep_cleanup_ctx_t *ep_cleanup_ctx
+                    = ucs_derived_of(wait_ctx, uct_rc_verbs_ep_cleanup_ctx_t);
+    uint32_t qp_num = ep_cleanup_ctx->qp->qp_num;
+
+    uct_ib_destroy_qp(ep_cleanup_ctx->qp);
+    uct_rc_ep_cleanup_qp_done(&ep_cleanup_ctx->super, qp_num);
+}
+
+UCS_CLASS_CLEANUP_FUNC(uct_rc_verbs_ep_t)
 {
     uct_rc_verbs_iface_t *iface = ucs_derived_of(self->super.super.super.iface,
                                                  uct_rc_verbs_iface_t);
-    uct_ib_md_t *md             = uct_ib_iface_md(&iface->super.super);
+    uct_rc_verbs_ep_cleanup_ctx_t *ep_cleanup_ctx;
 
+    ep_cleanup_ctx = ucs_malloc(sizeof(*ep_cleanup_ctx), "ep_cleanup_ctx");
+    ucs_assert_always(ep_cleanup_ctx != NULL);
+    ep_cleanup_ctx->qp = self->qp;
+
+    uct_rc_txqp_purge_outstanding(&iface->super, &self->super.txqp,
+                                  UCS_ERR_CANCELED, self->txcnt.pi, 1);
     /* NOTE: usually, ci == pi here, but if user calls
      *       flush(UCT_FLUSH_FLAG_CANCEL) then ep_destroy without next progress,
      *       TX-completion handler is not able to return CQ credits because
@@ -631,11 +640,9 @@ static UCS_CLASS_CLEANUP_FUNC(uct_rc_verbs_ep_t)
     ucs_assert(self->txcnt.pi >= self->txcnt.ci);
     iface->super.tx.cq_available += self->txcnt.pi - self->txcnt.ci;
     ucs_assert(iface->super.tx.cq_available < iface->super.config.tx_ops_count);
-    uct_ib_device_async_event_unregister(&md->dev,
-                                         IBV_EVENT_QP_LAST_WQE_REACHED,
-                                         self->qp->qp_num);
-    uct_rc_iface_remove_qp(&iface->super, self->qp->qp_num);
-    uct_ib_destroy_qp(self->qp);
+    uct_ib_modify_qp(self->qp, IBV_QPS_ERR);
+    uct_rc_ep_cleanup_qp(&iface->super, &self->super, &ep_cleanup_ctx->super,
+                         self->qp->qp_num);
 }
 
 UCS_CLASS_DEFINE(uct_rc_verbs_ep_t, uct_rc_ep_t);

@@ -34,7 +34,8 @@ ucp_proto_multi_data_pack(ucp_proto_multi_pack_ctx_t *pack_ctx, void *dest)
 {
     ucp_request_t *req = pack_ctx->req;
 
-    return ucp_datatype_iter_next_pack(&req->send.dt_iter, req->send.ep->worker,
+    return ucp_datatype_iter_next_pack(&req->send.state.dt_iter,
+                                       req->send.ep->worker,
                                        pack_ctx->max_payload,
                                        pack_ctx->next_iter, dest);
 }
@@ -92,8 +93,9 @@ ucp_proto_multi_progress(ucp_request_t *req, ucp_proto_send_multi_cb_t send_func
     }
 
     /* advance position in send buffer */
-    ucp_datatype_iter_copy_from_next(&req->send.dt_iter, &next_iter, dt_mask);
-    if (ucp_datatype_iter_is_end(&req->send.dt_iter)) {
+    ucp_datatype_iter_copy_from_next(&req->send.state.dt_iter, &next_iter,
+                                     dt_mask);
+    if (ucp_datatype_iter_is_end(&req->send.state.dt_iter)) {
         complete_func(req, UCS_OK);
         return UCS_OK;
     }
@@ -127,7 +129,10 @@ ucp_proto_multi_zcopy_progress(uct_pending_req_t *uct_req,
         }
 
         ucp_proto_multi_request_init(req);
-        init_func(req);
+        if (init_func != NULL) {
+            init_func(req);
+        }
+
         req->flags |= UCP_REQUEST_FLAG_PROTO_INITIALIZED;
     }
 

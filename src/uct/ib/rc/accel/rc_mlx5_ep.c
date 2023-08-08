@@ -22,6 +22,17 @@
 #include "rc_mlx5.inl"
 
 
+/**
+ * RC MLX5 EP cleanup context
+ */
+typedef struct {
+    uct_rc_ep_cleanup_ctx_t    super;           /* Base class */
+    uct_ib_mlx5_qp_t           tm_qp;           /* TM Renezvous QP */
+    uct_ib_mlx5_qp_t           qp;              /* Main QP */
+    uct_ib_mlx5_mmio_reg_t     *reg;            /* Doorbell register */
+} uct_rc_mlx5_ep_cleanup_ctx_t;
+
+
 /*
  *
  * Helper function for buffer-copy post.
@@ -531,15 +542,11 @@ ucs_status_t uct_rc_mlx5_ep_fence(uct_ep_h tl_ep, unsigned flags)
     return uct_rc_ep_fence(tl_ep, &ep->tx.wq.fi, 1);
 }
 
-ucs_status_t
-uct_rc_mlx5_ep_check(uct_ep_h tl_ep, unsigned flags, uct_completion_t *comp)
+void uct_rc_mlx5_ep_post_check(uct_ep_h tl_ep)
 {
     UCT_RC_MLX5_EP_DECL(tl_ep, iface, ep);
     /* use this variable as dummy buffer to suppress compiler warning */ 
     uint64_t dummy = 0;
-
-    UCT_CHECK_PARAM(comp == NULL, "Unsupported completion on ep_check");
-    UCT_RC_CHECK_TX_CQ_RES(&iface->super, &ep->super);
 
     uct_rc_mlx5_txqp_inline_post(iface, IBV_QPT_RC,
                                  &ep->super.txqp, &ep->tx.wq,
@@ -548,21 +555,17 @@ uct_rc_mlx5_ep_check(uct_ep_h tl_ep, unsigned flags, uct_completion_t *comp)
                                  0, 0,
                                  NULL, NULL, 0, 0,
                                  INT_MAX);
-    return UCS_OK;
 }
 
 ucs_status_t uct_rc_mlx5_ep_flush(uct_ep_h tl_ep, unsigned flags,
                                   uct_completion_t *comp)
 {
     UCT_RC_MLX5_EP_DECL(tl_ep, iface, ep);
+    uct_ib_mlx5_md_t *md = ucs_derived_of(iface->super.super.super.md,
+                                          uct_ib_mlx5_md_t);
+    int already_canceled = ep->super.flags & UCT_RC_EP_FLAG_FLUSH_CANCEL;
     ucs_status_t status;
     uint16_t sn;
-
-    if (ucs_unlikely(flags & UCT_FLUSH_FLAG_CANCEL)) {
-        uct_ep_pending_purge(&ep->super.super.super, NULL, 0);
-        uct_rc_mlx5_ep_handle_failure(ep, UCS_ERR_CANCELED);
-        return UCS_OK;
-    }
 
     status = uct_rc_ep_flush(&ep->super, ep->tx.wq.bb_max, flags);
     if (status != UCS_INPROGRESS) {
@@ -581,6 +584,13 @@ ucs_status_t uct_rc_mlx5_ep_flush(uct_ep_h tl_ep, unsigned flags,
                                      INT_MAX);
     } else {
         sn = ep->tx.wq.sig_pi;
+    }
+
+    if (ucs_unlikely((flags & UCT_FLUSH_FLAG_CANCEL) && !already_canceled)) {
+        status = uct_ib_mlx5_modify_qp_state(md, &ep->tx.wq.super, IBV_QPS_ERR);
+        if (status != UCS_OK) {
+            return status;
+        }
     }
 
     return uct_rc_txqp_add_flush_comp(&iface->super, &ep->super.super,
@@ -664,7 +674,7 @@ void uct_rc_mlx5_common_packet_dump(uct_base_iface_t *iface, uct_am_trace_type_t
                           valid_length, buffer, max);
 }
 
-static ucs_status_t UCS_F_ALWAYS_INLINE
+ucs_status_t
 uct_rc_mlx5_ep_connect_qp(uct_rc_mlx5_iface_common_t *iface,
                           uct_ib_mlx5_qp_t *qp, uint32_t qp_num,
                           struct ibv_ah_attr *ah_attr, enum ibv_mtu path_mtu)
@@ -723,6 +733,7 @@ ucs_status_t uct_rc_mlx5_ep_connect_to_ep(uct_ep_h tl_ep,
     }
 
     ep->super.atomic_mr_offset = uct_ib_md_atomic_offset(rc_addr->atomic_mr_id);
+    ep->super.flags           |= UCT_RC_EP_FLAG_CONNECTED;
 
     return UCS_OK;
 }
@@ -926,11 +937,9 @@ UCS_CLASS_INIT_FUNC(uct_rc_mlx5_ep_t, const uct_ep_params_t *params)
         }
     }
 
-    status = uct_ib_device_async_event_register(
-            &md->super.dev,
-            IBV_EVENT_QP_LAST_WQE_REACHED,
-            self->tx.wq.super.qp_num,
-            &iface->super.super.super.worker->super.progress_q);
+    status = uct_ib_device_async_event_register(&md->super.dev,
+                                                IBV_EVENT_QP_LAST_WQE_REACHED,
+                                                self->tx.wq.super.qp_num);
     if (status != UCS_OK) {
         goto err;
     }
@@ -967,103 +976,66 @@ err:
     return status;
 }
 
-static void uct_rc_mlx5_ep_clean_qp(uct_rc_mlx5_ep_t *ep, uct_ib_mlx5_qp_t *qp)
+void uct_rc_mlx5_ep_cleanup_qp(uct_ib_async_event_wait_t *wait_ctx)
 {
-    uct_rc_mlx5_iface_common_t *iface = ucs_derived_of(ep->super.super.super.iface,
+    uct_rc_mlx5_ep_cleanup_ctx_t *ep_cleanup_ctx
+                                      = ucs_derived_of(wait_ctx,
+                                                       uct_rc_mlx5_ep_cleanup_ctx_t);
+    uct_rc_mlx5_iface_common_t *iface = ucs_derived_of(ep_cleanup_ctx->super.iface,
                                                        uct_rc_mlx5_iface_common_t);
     uct_ib_mlx5_md_t *md              = ucs_derived_of(iface->super.super.super.md,
                                                        uct_ib_mlx5_md_t);
+#if !HAVE_DECL_MLX5DV_INIT_OBJ
+    int count;
 
-    /* Make the HW generate CQEs for all in-progress SRQ receives from the QP,
-     * so we clean them all before ibv_modify_qp() can see them.
-     */
-#if HAVE_DECL_IBV_CMD_MODIFY_QP && !HAVE_DEVX
-    struct ibv_qp_attr qp_attr;
-    struct ibv_modify_qp cmd;
-    int ret;
-
-    /* Bypass mlx5 driver, and go directly to command interface, to avoid
-     * cleaning the CQ in mlx5 driver
-     */
-    memset(&qp_attr, 0, sizeof(qp_attr));
-    qp_attr.qp_state = IBV_QPS_RESET;
-    ret = ibv_cmd_modify_qp(qp->verbs.qp, &qp_attr, IBV_QP_STATE, &cmd, sizeof(cmd));
-    if (ret) {
-        ucs_warn("modify qp 0x%x to RESET failed: %m", qp->qp_num);
-    }
-#else
-    (void)uct_ib_mlx5_modify_qp_state(md, qp, IBV_QPS_ERR);
+    count = uct_rc_mlx5_iface_commom_clean(&iface->cq[UCT_IB_DIR_RX],
+                                           &iface->rx.srq,
+                                           ep_cleanup_ctx->qp.qp_num);
+    iface->super.rx.srq.available += count;
+    uct_rc_mlx5_iface_common_update_cqs_ci(iface, &iface->super.super);
 #endif
 
-    iface->super.rx.srq.available += uct_rc_mlx5_iface_commom_clean(
-            &iface->cq[UCT_IB_DIR_RX],
-            &iface->rx.srq, qp->qp_num);
+#if IBV_HW_TM
+    if (UCT_RC_MLX5_TM_ENABLED(iface)) {
+        /* using uct_ib_mlx5_iface_put_res_domain and not
+         * uct_ib_mlx5_qp_mmio_cleanup: in case of devx, we don't have uar,
+         * and uct_ib_mlx5_qp_mmio_cleanup would try to release uar */
+        uct_ib_mlx5_iface_put_res_domain(&ep_cleanup_ctx->tm_qp);
+        uct_ib_mlx5_destroy_qp(md, &ep_cleanup_ctx->tm_qp);
+    }
+#endif
 
-    /* Synchronize CQ index with the driver, since it would remove pending
-     * completions for this QP (both send and receive) during ibv_destroy_qp().
-     */
-    uct_rc_mlx5_iface_common_update_cqs_ci(iface, &iface->super.super);
-    (void)uct_ib_mlx5_modify_qp_state(md, qp, IBV_QPS_RESET);
-    uct_rc_mlx5_iface_common_sync_cqs_ci(iface, &iface->super.super);
+    uct_ib_mlx5_qp_mmio_cleanup(&ep_cleanup_ctx->qp, ep_cleanup_ctx->reg);
+    uct_ib_mlx5_destroy_qp(md, &ep_cleanup_ctx->qp);
+    uct_rc_ep_cleanup_qp_done(&ep_cleanup_ctx->super, ep_cleanup_ctx->qp.qp_num);
 }
 
-static UCS_CLASS_CLEANUP_FUNC(uct_rc_mlx5_ep_t)
+UCS_CLASS_CLEANUP_FUNC(uct_rc_mlx5_ep_t)
 {
     uct_rc_mlx5_iface_common_t *iface = ucs_derived_of(self->super.super.super.iface,
                                                        uct_rc_mlx5_iface_common_t);
     uct_ib_mlx5_md_t *md              = ucs_derived_of(iface->super.super.super.md,
                                                        uct_ib_mlx5_md_t);
+    uct_rc_mlx5_ep_cleanup_ctx_t *ep_cleanup_ctx;
 
-    uct_ib_mlx5_txwq_cleanup(&self->tx.wq);
-    uct_rc_mlx5_ep_clean_qp(self, &self->tx.wq.super);
+    ep_cleanup_ctx = ucs_malloc(sizeof(*ep_cleanup_ctx), "ep_cleanup_ctx");
+    ucs_assert_always(ep_cleanup_ctx != NULL);
+    ep_cleanup_ctx->tm_qp = self->tm_qp;
+    ep_cleanup_ctx->qp    = self->tx.wq.super;
+    ep_cleanup_ctx->reg   = self->tx.wq.reg;
+
+    uct_rc_txqp_purge_outstanding(&iface->super, &self->super.txqp,
+                                  UCS_ERR_CANCELED, self->tx.wq.sw_pi, 1);
 #if IBV_HW_TM
     if (UCT_RC_MLX5_TM_ENABLED(iface)) {
-        uct_rc_mlx5_ep_clean_qp(self, &self->tm_qp);
-        uct_ib_mlx5_iface_put_res_domain(&self->tm_qp);
         uct_rc_iface_remove_qp(&iface->super, self->tm_qp.qp_num);
-        uct_ib_mlx5_destroy_qp(md, &self->tm_qp);
     }
 #endif
 
     ucs_assert(self->mp.free == 1);
-
-    /* Return all credits if user do flush(UCT_FLUSH_FLAG_CANCEL) before
-     * ep_destroy.
-     */
-    uct_rc_txqp_available_add(&self->super.txqp,
-                              self->tx.wq.bb_max -
-                              uct_rc_txqp_available(&self->super.txqp));
-
-    uct_ib_mlx5_verbs_srq_cleanup(&iface->rx.srq, iface->rx.srq.verbs.srq);
-
-    uct_ib_device_async_event_unregister(&md->super.dev,
-                                         IBV_EVENT_QP_LAST_WQE_REACHED,
-                                         self->tx.wq.super.qp_num);
-    uct_rc_iface_remove_qp(&iface->super, self->tx.wq.super.qp_num);
-    uct_ib_mlx5_destroy_qp(md, &self->tx.wq.super);
-}
-
-ucs_status_t uct_rc_mlx5_ep_handle_failure(uct_rc_mlx5_ep_t *ep,
-                                           ucs_status_t status)
-{
-    uct_ib_iface_t *ib_iface = ucs_derived_of(ep->super.super.super.iface,
-                                              uct_ib_iface_t);
-    uct_rc_iface_t *rc_iface = ucs_derived_of(ib_iface, uct_rc_iface_t);
-
-    uct_rc_txqp_purge_outstanding(rc_iface, &ep->super.txqp, status, 0);
-    /* poll_cqe for mlx5 returns NULL in case of failure and the cq_avaialble
-       is not updated for the error cqe and all outstanding wqes*/
-    rc_iface->tx.cq_available += ep->tx.wq.bb_max -
-                                 uct_rc_txqp_available(&ep->super.txqp);
-    return ib_iface->ops->set_ep_failed(ib_iface, &ep->super.super.super,
-                                        status);
-}
-
-ucs_status_t uct_rc_mlx5_ep_set_failed(uct_ib_iface_t *iface, uct_ep_h ep,
-                                       ucs_status_t status)
-{
-    return uct_set_ep_failed(&UCS_CLASS_NAME(uct_rc_mlx5_ep_t), ep,
-                             &iface->super.super, status);
+    (void)uct_ib_mlx5_modify_qp_state(md, &self->tx.wq.super, IBV_QPS_ERR);
+    uct_rc_ep_cleanup_qp(&iface->super, &self->super, &ep_cleanup_ctx->super,
+                         self->tx.wq.super.qp_num);
 }
 
 UCS_CLASS_DEFINE(uct_rc_mlx5_ep_t, uct_rc_ep_t);

@@ -6,7 +6,7 @@
 
 #include <common/test.h>
 
-#include "test_ucp_tag.h"
+#include "ucp_test.h"
 #include "ucp_datatype.h"
 
 extern "C" {
@@ -19,9 +19,7 @@ class test_ucp_peer_failure : public ucp_test {
 public:
     test_ucp_peer_failure();
 
-    static std::vector<ucp_test_param>
-    enum_test_params(const ucp_params_t& ctx_params, const std::string& name,
-                     const std::string& test_case_name, const std::string& tls);
+    static void get_test_variants(std::vector<ucp_test_variant>& variants);
 
     ucp_ep_params_t get_ep_params();
 
@@ -84,31 +82,13 @@ test_ucp_peer_failure::test_ucp_peer_failure() : m_err_count(0), m_err_status(UC
     set_timeouts();
 }
 
-std::vector<ucp_test_param>
-test_ucp_peer_failure::enum_test_params(const ucp_params_t& ctx_params,
-                                        const std::string& name,
-                                        const std::string& test_case_name,
-                                        const std::string& tls)
-{
-    std::vector<ucp_test_param> result;
-
-    ucp_params_t params = ucp_test::get_ctx_params();
-
-    params.field_mask  |= UCP_PARAM_FIELD_FEATURES;
-
-    params.features = UCP_FEATURE_TAG;
-    generate_test_params_variant(params, name, test_case_name + "/tag", tls,
-                                 TEST_TAG, result);
-    generate_test_params_variant(params, name, test_case_name + "/tag_fail_imm",
-                                 tls, TEST_TAG | FAIL_IMM, result);
-
-    params.features = UCP_FEATURE_RMA;
-    generate_test_params_variant(params, name, test_case_name + "/rma", tls,
-                                 TEST_RMA, result);
-    generate_test_params_variant(params, name, test_case_name + "/rma_fail_imm",
-                                 tls, TEST_RMA | FAIL_IMM, result);
-
-    return result;
+void test_ucp_peer_failure::get_test_variants(std::vector<ucp_test_variant>& variants) {
+    add_variant_with_value(variants, UCP_FEATURE_TAG, TEST_TAG, "tag");
+    add_variant_with_value(variants, UCP_FEATURE_RMA, TEST_RMA, "rma");
+    add_variant_with_value(variants, UCP_FEATURE_TAG, TEST_TAG | FAIL_IMM,
+                           "tag_fail_imm");
+    add_variant_with_value(variants, UCP_FEATURE_RMA, TEST_RMA | FAIL_IMM,
+                           "rma_fail_imm");
 }
 
 ucp_ep_params_t test_ucp_peer_failure::get_ep_params() {
@@ -123,10 +103,7 @@ ucp_ep_params_t test_ucp_peer_failure::get_ep_params() {
 }
 
 void test_ucp_peer_failure::set_timeouts() {
-    /* Set small TL timeouts to reduce testing time */
-    m_env.push_back(new ucs::scoped_setenv("UCX_RC_TIMEOUT",     "10ms"));
-    m_env.push_back(new ucs::scoped_setenv("UCX_RC_RNR_TIMEOUT", "10ms"));
-    m_env.push_back(new ucs::scoped_setenv("UCX_RC_RETRY_COUNT", "2"));
+    set_tl_timeouts(m_env);
 }
 
 void test_ucp_peer_failure::err_cb(void *arg, ucp_ep_h ep, ucs_status_t status) {
@@ -155,10 +132,10 @@ ucp_test::entity& test_ucp_peer_failure::failing_receiver() {
 }
 
 void *test_ucp_peer_failure::send_nb(ucp_ep_h ep, ucp_rkey_h rkey) {
-    if (GetParam().variant & TEST_TAG) {
+    if (get_variant_value() & TEST_TAG) {
         return ucp_tag_send_nb(ep, &m_sbuf[0], m_sbuf.size(), DATATYPE, 0,
                                send_cb);
-    } else if (GetParam().variant & TEST_RMA) {
+    } else if (get_variant_value() & TEST_RMA) {
         return ucp_put_nb(ep, &m_sbuf[0], m_sbuf.size(), (uintptr_t)&m_rbuf[0],
                           rkey, send_cb);
     } else {
@@ -168,10 +145,10 @@ void *test_ucp_peer_failure::send_nb(ucp_ep_h ep, ucp_rkey_h rkey) {
 
 void *test_ucp_peer_failure::recv_nb(entity& e) {
     ucs_assert(m_rbuf.size() >= m_sbuf.size());
-    if (GetParam().variant & TEST_TAG) {
+    if (get_variant_value() & TEST_TAG) {
         return ucp_tag_recv_nb(e.worker(), &m_rbuf[0], m_rbuf.size(), DATATYPE, 0,
                                0, recv_cb);
-    } else if (GetParam().variant & TEST_RMA) {
+    } else if (get_variant_value() & TEST_RMA) {
         return NULL;
     } else {
         ucs_fatal("invalid test case");
@@ -262,7 +239,7 @@ void test_ucp_peer_failure::get_rkey(ucp_ep_h ep, entity& dst, mem_handle_t& mem
 
 void test_ucp_peer_failure::set_rkeys() {
 
-    if (GetParam().variant & TEST_RMA) {
+    if (get_variant_value() & TEST_RMA) {
         get_rkey(failing_sender(), failing_receiver(), m_failing_memh,
                  m_failing_rkey);
         get_rkey(stable_sender(), stable_receiver(), m_stable_memh,
@@ -307,7 +284,7 @@ void test_ucp_peer_failure::do_test(size_t msg_size, int pre_msg_count,
      * run traffic on a stable pair to connect it */
     smoke_test(true);
 
-    if (!(GetParam().variant & FAIL_IMM)) {
+    if (!(get_variant_value() & FAIL_IMM)) {
         /* if not fail immediately, run traffic on failing pair to connect it */
         smoke_test(false);
     }
@@ -323,8 +300,9 @@ void test_ucp_peer_failure::do_test(size_t msg_size, int pre_msg_count,
         }
     }
 
+    flush_ep(sender(), 0, FAILING_EP_INDEX);
     EXPECT_EQ(UCS_OK, m_err_status);
-    
+
     /* Since UCT/UD EP has a SW implementation of reliablity on which peer
      * failure mechanism is based, we should set small UCT/UD EP timeout
      * for UCT/UD EPs for sender's UCP EP to reduce testing time */
@@ -336,7 +314,7 @@ void test_ucp_peer_failure::do_test(size_t msg_size, int pre_msg_count,
         fail_receiver();
 
         void *sreq = send_nb(failing_sender(), m_failing_rkey);
-
+        flush_ep(sender(), 0, FAILING_EP_INDEX);
         while (!m_err_count) {
             progress();
         }
@@ -377,7 +355,7 @@ void test_ucp_peer_failure::do_test(size_t msg_size, int pre_msg_count,
             unsigned allocd_eps_after =
                     ucs_strided_alloc_inuse_count(&sender().worker()->ep_alloc);
 
-            if (!(GetParam().variant & FAIL_IMM)) {
+            if (!(get_variant_value() & FAIL_IMM)) {
                 EXPECT_LT(allocd_eps_after, allocd_eps_before);
             }
         }
@@ -455,7 +433,7 @@ UCS_TEST_P(test_ucp_peer_failure, force_close, "RC_FC_ENABLE?=n") {
 }
 
 UCS_TEST_SKIP_COND_P(test_ucp_peer_failure, disable_sync_send,
-                     !(GetParam().variant & TEST_TAG)) {
+                     !(get_variant_value() & TEST_TAG)) {
     const size_t        max_size = UCS_MBYTE;
     std::vector<char>   buf(max_size, 0);
     void                *req;
@@ -494,23 +472,13 @@ public:
         failing_receiver().connect(&sender(), get_ep_params());
     }
 
-    static std::vector<ucp_test_param>
-    enum_test_params(const ucp_params_t& ctx_params, const std::string& name,
-                     const std::string& test_case_name, const std::string& tls)
-    {
-        ucp_params_t params = ucp_test::get_ctx_params();
-        std::vector<ucp_test_param> result;
-
-        params.field_mask |= UCP_PARAM_FIELD_FEATURES;
-        params.features    = UCP_FEATURE_TAG;
-        generate_test_params_variant(params, name, test_case_name + "/tag", tls,
-                                     TEST_TAG, result);
-        return result;
+    static void get_test_variants(std::vector<ucp_test_variant>& variants) {
+        add_variant_with_value(variants, UCP_FEATURE_TAG, TEST_TAG, "tag");
     }
 };
 
 UCS_TEST_P(test_ucp_peer_failure_keepalive, kill_receiver,
-           "KEEPALIVE_TIMEOUT=0.3", "KEEPALIVE_NUM_EPS=inf") {
+           "KEEPALIVE_INTERVAL=0.3", "KEEPALIVE_NUM_EPS=inf") {
     /* TODO: wireup is not tested yet */
 
     scoped_log_handler err_handler(wrap_errors_logger);
@@ -534,8 +502,9 @@ UCS_TEST_P(test_ucp_peer_failure_keepalive, kill_receiver,
     /* flush all outstanding ops to allow keepalive to run */
     flush_worker(sender());
 
-    /* kill EPs */
+    /* kill EPs & ifaces */
     failing_receiver().close_all_eps(*this, 0, UCP_EP_CLOSE_MODE_FORCE);
+    failing_receiver().destroy_worker(0);
     wait_for_flag(&m_err_count);
 
     /* dump warnings */

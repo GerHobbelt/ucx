@@ -182,6 +182,14 @@ enum {
 
 
 /**
+ * In debug mode, check that keepalive params are valid
+ */
+#define UCT_EP_KEEPALIVE_CHECK_PARAM(_flags, _comp) \
+    UCT_CHECK_PARAM((_comp) == NULL, "Unsupported completion on ep_check"); \
+    UCT_CHECK_PARAM((_flags) == 0, "Unsupported flags: %x", (_flags));
+
+
+/**
  * Declare classes for structures defined in api/tl.h
  */
 UCS_CLASS_DECLARE(uct_iface_h, uct_iface_ops_t, uct_md_h);
@@ -305,7 +313,7 @@ typedef struct uct_tl {
             .size           = sizeof(_cfg_struct), \
          } \
     }; \
-    UCS_CONFIG_REGISTER_TABLE_ENTRY(&(uct_##_name##_tl).config); \
+    UCS_CONFIG_REGISTER_TABLE_ENTRY(&(uct_##_name##_tl).config, &ucs_config_global_list); \
     UCS_STATIC_INIT { \
         ucs_list_add_tail(&(_component)->tl_list, &(uct_##_name##_tl).list); \
     }
@@ -597,13 +605,18 @@ void uct_iface_dump_am(uct_base_iface_t *iface, uct_am_trace_type_t type,
 
 void uct_iface_mpool_empty_warn(uct_base_iface_t *iface, ucs_mpool_t *mp);
 
-ucs_status_t uct_set_ep_failed(ucs_class_t* cls, uct_ep_h tl_ep, uct_iface_h
-                               tl_iface, ucs_status_t status);
+void uct_iface_set_async_event_params(const uct_iface_params_t *params,
+                                      uct_async_event_cb_t *event_cb,
+                                      void **event_arg);
+
+ucs_status_t uct_iface_handle_ep_err(uct_iface_h iface, uct_ep_h ep,
+                                      ucs_status_t status);
 
 void uct_base_iface_query(uct_base_iface_t *iface, uct_iface_attr_t *iface_attr);
 
 ucs_status_t uct_single_device_resource(uct_md_h md, const char *dev_name,
                                         uct_device_type_t dev_type,
+                                        ucs_sys_device_t sys_device,
                                         uct_tl_device_resource_t **tl_devices_p,
                                         unsigned *num_tl_devices_p);
 

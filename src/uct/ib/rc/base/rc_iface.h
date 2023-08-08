@@ -157,6 +157,7 @@ typedef struct uct_rc_iface_common_config {
         unsigned             rnr_retry_count;
         size_t               max_get_zcopy;
         size_t               max_get_bytes;
+        int                  poll_always;
     } tx;
 
     struct {
@@ -188,6 +189,8 @@ typedef struct uct_rc_iface_ops {
                                        uct_rc_hdr_t *hdr, unsigned length,
                                        uint32_t imm_data, uint16_t lid,
                                        unsigned flags);
+    void                 (*cleanup_qp)(uct_ib_async_event_wait_t *cleanup_ctx);
+    void                 (*ep_post_check)(uct_ep_h tl_ep);
 } uct_rc_iface_ops_t;
 
 
@@ -233,6 +236,7 @@ struct uct_rc_iface {
         unsigned             tx_min_inline;
         unsigned             tx_ops_count;
         uint16_t             tx_moderation;
+        uint8_t              tx_poll_always;
 
         /* Threshold to send "soft" FC credit request. The peer will try to
          * piggy-back credits grant to the counter AM, if any. */
@@ -267,8 +271,10 @@ struct uct_rc_iface {
 
     UCS_STATS_NODE_DECLARE(stats)
 
+    ucs_spinlock_t           eps_lock; /* common lock for eps and ep_list */
     uct_rc_ep_t              **eps[UCT_RC_QP_TABLE_SIZE];
     ucs_list_link_t          ep_list;
+    ucs_list_link_t          ep_gc_list;
 
     /* Progress function (either regular or TM aware) */
     ucs_callback_t           progress;
@@ -292,6 +298,7 @@ struct uct_rc_iface_send_op {
         void                      *unpack_arg; /* get_bcopy / desc */
         uct_rc_iface_t            *iface;      /* should not be used with
                                                   get_bcopy completions */
+        uct_ep_h                  ep;          /* ep on which we sent ep_check */
     };
     uct_completion_t              *user_comp;
 #ifndef NVALGRIND
@@ -338,6 +345,8 @@ ucs_status_t uct_rc_iface_flush(uct_iface_h tl_iface, unsigned flags,
 void uct_rc_iface_send_desc_init(uct_iface_h tl_iface, void *obj, uct_mem_h memh);
 
 void uct_rc_ep_am_zcopy_handler(uct_rc_iface_send_op_t *op, const void *resp);
+
+void uct_rc_iface_cleanup_eps(uct_rc_iface_t *iface);
 
 /**
  * Creates an RC or DCI QP
@@ -523,6 +532,12 @@ uct_rc_iface_invoke_pending_cb(uct_rc_iface_t *iface, uct_pending_req_t *req)
                    ucs_status_string(status));
 
     return status;
+}
+
+static UCS_F_ALWAYS_INLINE int
+uct_rc_iface_poll_tx(uct_rc_iface_t *iface, unsigned count)
+{
+    return (count == 0) || iface->config.tx_poll_always;
 }
 
 #endif

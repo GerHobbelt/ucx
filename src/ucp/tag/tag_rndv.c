@@ -39,11 +39,10 @@ ucs_status_t ucp_tag_rndv_process_rts(ucp_worker_h worker,
 
     rreq = ucp_tag_exp_search(&worker->tm, rts_hdr->tag.tag);
     if (rreq != NULL) {
-        ucp_tag_rndv_matched(worker, rreq, rts_hdr);
-
         /* Cancel req in transport if it was offloaded, because it arrived
            as unexpected */
         ucp_tag_offload_try_cancel(worker, rreq, UCP_TAG_OFFLOAD_CANCEL_FORCE);
+        ucp_tag_rndv_matched(worker, rreq, rts_hdr);
 
         UCP_WORKER_STAT_RNDV(worker, EXP, 1);
         return UCS_OK;
@@ -83,11 +82,15 @@ UCS_PROFILE_FUNC(ucs_status_t, ucp_proto_progress_rndv_rts, (self),
 {
     ucp_request_t *sreq = ucs_container_of(self, ucp_request_t, send.uct);
     size_t packed_rkey_size;
+    ucs_status_t status;
 
-    /* send the RTS. the pack_cb will pack all the necessary fields in the RTS */
+    /* send the RTS. the pack_cb packs all the necessary fields in the RTS */
     packed_rkey_size = ucp_ep_config(sreq->send.ep)->rndv.rkey_size;
-    return ucp_do_am_single(self, UCP_AM_ID_RNDV_RTS, ucp_tag_rndv_rts_pack,
-                            sizeof(ucp_tag_rndv_rts_hdr_t) + packed_rkey_size);
+
+    status = ucp_do_am_single(self, UCP_AM_ID_RNDV_RTS, ucp_tag_rndv_rts_pack,
+                              sizeof(ucp_tag_rndv_rts_hdr_t) +
+                              packed_rkey_size);
+    return ucp_rndv_rts_handle_status_from_pending(sreq, status);
 }
 
 ucs_status_t ucp_tag_send_start_rndv(ucp_request_t *sreq)
@@ -95,15 +98,17 @@ ucs_status_t ucp_tag_send_start_rndv(ucp_request_t *sreq)
     ucp_ep_h ep = sreq->send.ep;
     ucs_status_t status;
 
-    ucp_trace_req(sreq, "start_rndv to %s buffer %p length %zu",
+    ucp_trace_req(sreq, "start_rndv to %s buffer %p length %zu mem_type:%s",
                   ucp_ep_peer_name(ep), sreq->send.buffer,
-                  sreq->send.length);
+                  sreq->send.length, ucs_memory_type_names[sreq->send.mem_type]);
     UCS_PROFILE_REQUEST_EVENT(sreq, "start_rndv", sreq->send.length);
 
     status = ucp_ep_resolve_remote_id(ep, sreq->send.lane);
     if (status != UCS_OK) {
         return status;
     }
+
+    ucp_send_request_set_id(sreq);
 
     if (ucp_ep_is_tag_offload_enabled(ucp_ep_config(ep))) {
         status = ucp_tag_offload_start_rndv(sreq);

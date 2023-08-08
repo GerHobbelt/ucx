@@ -195,6 +195,15 @@ static void uct_ib_device_get_locality(const char *dev_name,
     *numa_node = (status == UCS_OK) ? n : -1;
 }
 
+static unsigned uct_ib_device_async_event_proxy(void *arg)
+{
+    uct_ib_async_event_wait_t *wait_ctx = arg;
+
+    wait_ctx->cb_id = UCS_CALLBACKQ_ID_NULL;
+    wait_ctx->cb(wait_ctx);
+    return 1;
+}
+
 static void
 uct_ib_device_async_event_dispatch(uct_ib_device_t *dev,
                                    const uct_ib_async_event_t *event)
@@ -206,12 +215,12 @@ uct_ib_device_async_event_dispatch(uct_ib_device_t *dev,
     iter = kh_get(uct_ib_async_event, &dev->async_events_hash, *event);
     if (iter != kh_end(&dev->async_events_hash)) {
         entry = &kh_value(&dev->async_events_hash, iter);
-        if (entry->cb != NULL) {
-            ucs_callbackq_add_safe(entry->cbq, entry->cb, entry->arg,
-                                   UCS_CALLBACKQ_FLAG_ONESHOT);
-            entry->cb   = NULL;
-        } else {
-            entry->flag = 1;
+        entry->flag = 1;
+        if (entry->wait_ctx != NULL) {
+            /* someone is waiting */
+            entry->wait_ctx->cb_id = ucs_callbackq_add_safe(
+                    entry->wait_ctx->cbq, uct_ib_device_async_event_proxy,
+                    entry->wait_ctx, UCS_CALLBACKQ_FLAG_ONESHOT);
         }
     }
     ucs_spin_unlock(&dev->async_event_lock);
@@ -220,8 +229,7 @@ uct_ib_device_async_event_dispatch(uct_ib_device_t *dev,
 ucs_status_t
 uct_ib_device_async_event_register(uct_ib_device_t *dev,
                                    enum ibv_event_type event_type,
-                                   uint32_t resource_id,
-                                   ucs_callbackq_t *cbq)
+                                   uint32_t resource_id)
 {
     uct_ib_async_event_val_t *entry;
     uct_ib_async_event_t event;
@@ -240,11 +248,10 @@ uct_ib_device_async_event_register(uct_ib_device_t *dev,
     }
 
     ucs_assert(ret != UCS_KH_PUT_KEY_PRESENT);
-    entry       = &kh_value(&dev->async_events_hash, iter);
-    entry->cbq  = cbq;
-    entry->cb   = NULL;
-    entry->flag = 0;
-    status      = UCS_OK;
+    entry           = &kh_value(&dev->async_events_hash, iter);
+    entry->wait_ctx = NULL;
+    entry->flag     = 0;
+    status          = UCS_OK;
 
 out:
     ucs_spin_unlock(&dev->async_event_lock);
@@ -255,7 +262,7 @@ ucs_status_t
 uct_ib_device_async_event_wait(uct_ib_device_t *dev,
                                enum ibv_event_type event_type,
                                uint32_t resource_id,
-                               ucs_callback_t cb, void *arg)
+                               uct_ib_async_event_wait_t *wait_ctx)
 {
     uct_ib_async_event_val_t *entry;
     uct_ib_async_event_t event;
@@ -271,13 +278,17 @@ uct_ib_device_async_event_wait(uct_ib_device_t *dev,
     entry = &kh_value(&dev->async_events_hash, iter);
 
     if (entry->flag) {
-        status     = UCS_OK;
-    } else if (entry->cb != NULL) {
-        status     = UCS_ERR_BUSY;
+        /* event already arrived */
+        status          = UCS_OK;
+        entry->wait_ctx = NULL;
+    } else if (entry->wait_ctx != NULL) {
+        /* someone is already waiting for this event */
+        status          = UCS_ERR_BUSY;
     } else {
-        status     = UCS_INPROGRESS;
-        entry->cb  = cb;
-        entry->arg = arg;
+        /* start waiting for this event */
+        wait_ctx->cb_id = UCS_CALLBACKQ_ID_NULL;
+        status          = UCS_INPROGRESS;
+        entry->wait_ctx = wait_ctx;
     }
 
     ucs_spin_unlock(&dev->async_event_lock);
@@ -288,6 +299,7 @@ void uct_ib_device_async_event_unregister(uct_ib_device_t *dev,
                                           enum ibv_event_type event_type,
                                           uint32_t resource_id)
 {
+    uct_ib_async_event_val_t *entry;
     uct_ib_async_event_t event;
     khiter_t iter;
 
@@ -297,9 +309,16 @@ void uct_ib_device_async_event_unregister(uct_ib_device_t *dev,
     ucs_spin_lock(&dev->async_event_lock);
     iter = kh_get(uct_ib_async_event, &dev->async_events_hash, event);
     ucs_assert(iter != kh_end(&dev->async_events_hash));
+    entry = &kh_value(&dev->async_events_hash, iter);
+    if ((entry->wait_ctx != NULL) &&
+        (entry->wait_ctx->cb_id != UCS_CALLBACKQ_ID_NULL)) {
+        /* cancel scheduled callback */
+        ucs_callbackq_remove_safe(entry->wait_ctx->cbq, entry->wait_ctx->cb_id);
+    }
     kh_del(uct_ib_async_event, &dev->async_events_hash, iter);
     ucs_spin_unlock(&dev->async_event_lock);
 }
+
 static void uct_ib_async_event_handler(int fd, ucs_event_set_types_t events,
                                        void *arg)
 {
@@ -377,10 +396,14 @@ void uct_ib_handle_async_event(uct_ib_device_t *dev, uct_ib_async_event_t *event
                  ibv_event_type_str(event->event_type), event->cookie);
         level = UCS_LOG_LEVEL_ERROR;
         break;
+    case IBV_EVENT_COMM_EST:
+    case IBV_EVENT_QP_ACCESS_ERR:
+        snprintf(event_info, sizeof(event_info), "%s on QPN 0x%x",
+                 ibv_event_type_str(event->event_type), event->qp_num);
+        level = UCS_LOG_LEVEL_DIAG;
+        break;
     case IBV_EVENT_QP_FATAL:
     case IBV_EVENT_QP_REQ_ERR:
-    case IBV_EVENT_QP_ACCESS_ERR:
-    case IBV_EVENT_COMM_EST:
     case IBV_EVENT_SQ_DRAINED:
     case IBV_EVENT_PATH_MIG:
     case IBV_EVENT_PATH_MIG_ERR:
@@ -405,12 +428,16 @@ void uct_ib_handle_async_event(uct_ib_device_t *dev, uct_ib_async_event_t *event
         level = UCS_LOG_LEVEL_DEBUG;
         break;
     case IBV_EVENT_DEVICE_FATAL:
-    case IBV_EVENT_PORT_ERR:
         snprintf(event_info, sizeof(event_info), "%s on port %d",
                  ibv_event_type_str(event->event_type), event->port_num);
         level = UCS_LOG_LEVEL_ERROR;
         break;
     case IBV_EVENT_PORT_ACTIVE:
+    case IBV_EVENT_PORT_ERR:
+        snprintf(event_info, sizeof(event_info), "%s on port %d",
+                 ibv_event_type_str(event->event_type), event->port_num);
+        level = UCS_LOG_LEVEL_DIAG;
+        break;
 #if HAVE_DECL_IBV_EVENT_GID_CHANGE
     case IBV_EVENT_GID_CHANGE:
 #endif
@@ -501,10 +528,10 @@ ucs_status_t uct_ib_device_query(uct_ib_device_t *dev,
     }
 
     if (dev->num_ports > UCT_IB_DEV_MAX_PORTS) {
-        ucs_error("%s has %d ports, but only up to %d are supported",
+        ucs_debug("%s has %d ports, but only up to %d are supported",
                   ibv_get_device_name(ibv_device), dev->num_ports,
                   UCT_IB_DEV_MAX_PORTS);
-        return UCS_ERR_UNSUPPORTED;
+        dev->num_ports = UCT_IB_DEV_MAX_PORTS;
     }
 
     /* Query all ports */
@@ -654,6 +681,12 @@ ucs_status_t uct_ib_device_port_check(uct_ib_device_t *dev, uint8_t port_num,
         return UCS_ERR_NO_DEVICE;
     }
 
+    if (uct_ib_device_port_attr(dev, port_num)->gid_tbl_len == 0) {
+        ucs_debug("%s:%d has no gid", uct_ib_device_name(dev),
+                  port_num);
+        return UCS_ERR_UNSUPPORTED;
+    }
+
     if (uct_ib_device_port_attr(dev, port_num)->state != IBV_PORT_ACTIVE) {
         ucs_trace("%s:%d is not active (state: %d)", uct_ib_device_name(dev),
                   port_num, uct_ib_device_port_attr(dev, port_num)->state);
@@ -740,8 +773,8 @@ static sa_family_t uct_ib_device_get_addr_family(union ibv_gid *gid, int gid_ind
     const uint32_t addr_last_bits = raw->s6_addr32[2] ^ htonl(0x0000ffff);
     char p[128];
 
-    ucs_debug("testing addr_family on gid index %d: %s",
-              gid_index, uct_ib_gid_str(gid, p, sizeof(p)));
+    ucs_trace_func("testing addr_family on gid index %d: %s",
+                   gid_index, uct_ib_gid_str(gid, p, sizeof(p)));
 
     if (!((raw->s6_addr32[0] | raw->s6_addr32[1]) | addr_last_bits) ||
         uct_ib_device_is_addr_ipv4_mcast(raw, addr_last_bits)) {
@@ -1302,7 +1335,7 @@ int uct_ib_get_cqe_size(int cqe_size_min)
 
 static ucs_status_t
 uct_ib_device_get_roce_ndev_name(uct_ib_device_t *dev, uint8_t port_num,
-                                 char *ndev_name, size_t max)
+                                 uint8_t gid_index, char *ndev_name, size_t max)
 {
     ssize_t nread;
 
@@ -1311,7 +1344,7 @@ uct_ib_device_get_roce_ndev_name(uct_ib_device_t *dev, uint8_t port_num,
     /* get the network device name which corresponds to a RoCE port */
     nread = ucs_read_file_str(ndev_name, max, 1,
                               UCT_IB_DEVICE_SYSFS_GID_NDEV_FMT,
-                              uct_ib_device_name(dev), port_num, 0);
+                              uct_ib_device_name(dev), port_num, gid_index);
     if (nread < 0) {
         ucs_diag("failed to read " UCT_IB_DEVICE_SYSFS_GID_NDEV_FMT": %m",
                  uct_ib_device_name(dev), port_num, 0);
@@ -1322,14 +1355,15 @@ uct_ib_device_get_roce_ndev_name(uct_ib_device_t *dev, uint8_t port_num,
     return UCS_OK;
 }
 
-unsigned uct_ib_device_get_roce_lag_level(uct_ib_device_t *dev, uint8_t port_num)
+unsigned uct_ib_device_get_roce_lag_level(uct_ib_device_t *dev, uint8_t port_num,
+                                          uint8_t gid_index)
 {
     char ndev_name[IFNAMSIZ];
     unsigned roce_lag_level;
     ucs_status_t status;
 
-    status = uct_ib_device_get_roce_ndev_name(dev, port_num, ndev_name,
-                                              sizeof(ndev_name));
+    status = uct_ib_device_get_roce_ndev_name(dev, port_num, gid_index,
+                                              ndev_name, sizeof(ndev_name));
     if (status != UCS_OK) {
         return 1;
     }

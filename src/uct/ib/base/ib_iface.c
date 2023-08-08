@@ -1,5 +1,7 @@
 /**
 * Copyright (C) Mellanox Technologies Ltd. 2001-2014.  ALL RIGHTS RESERVED.
+* Copyright (C) 2021 Broadcom. ALL RIGHTS RESERVED. The term “Broadcom”
+* refers to Broadcom Inc. and/or its subsidiaries.
 *
 * See file LICENSE for terms.
 */
@@ -148,9 +150,10 @@ ucs_config_field_t uct_ib_iface_config_table[] = {
    "Force interface to use global routing.",
    ucs_offsetof(uct_ib_iface_config_t, is_global), UCS_CONFIG_TYPE_BOOL},
 
-  {"SL", "0",
-   "IB Service Level / RoCEv2 Ethernet Priority.\n",
-   ucs_offsetof(uct_ib_iface_config_t, sl), UCS_CONFIG_TYPE_UINT},
+  {"SL", "auto",
+   "InfiniBand: Service level. 'auto' will select a value matching UCX_IB_AR configuration.\n"
+   "RoCEv2: Ethernet Priority. 'auto' will select 0 by default.",
+   ucs_offsetof(uct_ib_iface_config_t, sl), UCS_CONFIG_TYPE_ULUNITS},
 
   {"TRAFFIC_CLASS", "auto",
    "IB Traffic Class / RoCEv2 Differentiated Services Code Point (DSCP).\n"
@@ -400,6 +403,10 @@ unsigned uct_ib_iface_address_pack_flags(uct_ib_iface_t *iface)
         pack_flags |= UCT_IB_ADDRESS_PACK_FLAG_SUBNET_PREFIX;
     }
 
+    if (iface->config.path_mtu != IBV_MTU_4096) {
+        pack_flags |= UCT_IB_ADDRESS_PACK_FLAG_PATH_MTU;
+    }
+
     return pack_flags;
 }
 
@@ -421,8 +428,8 @@ void uct_ib_iface_address_pack(uct_ib_iface_t *iface, uct_ib_address_t *ib_addr)
     params.gid       = iface->gid_info.gid;
     params.lid       = uct_ib_iface_port_attr(iface)->lid;
     params.roce_info = iface->gid_info.roce_info;
+    params.path_mtu  = iface->config.path_mtu;
     /* to suppress gcc 4.3.4 warning */
-    params.path_mtu  = UCT_IB_ADDRESS_INVALID_PATH_MTU;
     params.gid_index = UCT_IB_ADDRESS_INVALID_GID_INDEX;
     params.pkey      = iface->pkey;
     uct_ib_address_pack(&params, ib_addr);
@@ -645,6 +652,8 @@ void uct_ib_iface_fill_ah_attr_from_gid_lid(uct_ib_iface_t *iface, uint16_t lid,
     char buf[128];
 
     memset(ah_attr, 0, sizeof(*ah_attr));
+
+    ucs_assert(iface->config.sl < UCT_IB_SL_NUM);
 
     ah_attr->sl                = iface->config.sl;
     ah_attr->port_num          = iface->config.port_num;
@@ -949,7 +958,7 @@ ucs_status_t uct_ib_verbs_create_cq(uct_ib_iface_t *iface, uct_ib_dir_t dir,
     }
 
     cq = ibv_cq_ex_to_cq(ibv_create_cq_ex(dev->ibv_context, &cq_attr));
-    if (!cq && (errno == ENOSYS))
+    if (!cq && ((errno == EOPNOTSUPP) || (errno == ENOSYS)))
 #endif
     {
         iface->config.max_inl_cqe[dir] = 0;
@@ -1082,7 +1091,8 @@ static void uct_ib_iface_set_num_paths(uct_ib_iface_t *iface,
         if (uct_ib_iface_is_roce(iface)) {
             /* RoCE - number of paths is RoCE LAG level */
             iface->num_paths =
-                    uct_ib_device_get_roce_lag_level(dev, iface->config.port_num);
+                    uct_ib_device_get_roce_lag_level(dev, iface->config.port_num,
+                                                     iface->gid_info.gid_index);
         } else {
             /* IB - number of paths is LMC level */
             ucs_assert(iface->path_bits_count > 0);
@@ -1173,6 +1183,16 @@ static void uct_ib_iface_set_path_mtu(uct_ib_iface_t *iface,
     }
 }
 
+uint8_t uct_ib_iface_config_select_sl(const uct_ib_iface_config_t *ib_config)
+{
+    if (ib_config->sl == UCS_ULUNITS_AUTO) {
+        return 0;
+    }
+
+    ucs_assert(ib_config->sl < UCT_IB_SL_NUM);
+    return (uint8_t)ib_config->sl;
+}
+
 UCS_CLASS_INIT_FUNC(uct_ib_iface_t, uct_ib_iface_ops_t *ops, uct_md_h md,
                     uct_worker_h worker, const uct_iface_params_t *params,
                     const uct_ib_iface_config_t *config,
@@ -1209,7 +1229,8 @@ UCS_CLASS_INIT_FUNC(uct_ib_iface_t, uct_ib_iface_ops_t *ops, uct_md_h md,
                                             dev->stats)
                               UCS_STATS_ARG(params->mode.device.dev_name));
 
-    status = uct_ib_device_find_port(dev, params->mode.device.dev_name, &port_num);
+    status = uct_ib_device_find_port(dev, params->mode.device.dev_name,
+                                     &port_num);
     if (status != UCS_OK) {
         goto err;
     }
@@ -1232,7 +1253,8 @@ UCS_CLASS_INIT_FUNC(uct_ib_iface_t, uct_ib_iface_ops_t *ops, uct_md_h md,
     self->config.rx_max_batch       = ucs_min(config->rx.max_batch,
                                               config->rx.queue_len / 4);
     self->config.port_num           = port_num;
-    self->config.sl                 = config->sl;
+    /* initialize to invalid value */
+    self->config.sl                 = UCT_IB_SL_NUM;
     self->config.hop_limit          = config->hop_limit;
     self->release_desc.cb           = uct_ib_iface_release_desc;
     self->config.enable_res_domain  = config->enable_res_domain;
@@ -1446,18 +1468,13 @@ static ucs_status_t uct_ib_iface_get_numa_latency(uct_ib_iface_t *iface,
 ucs_status_t uct_ib_iface_query(uct_ib_iface_t *iface, size_t xport_hdr_len,
                                 uct_iface_attr_t *iface_attr)
 {
-    uct_ib_device_t *dev = uct_ib_iface_device(iface);
-    uct_ib_md_t     *md  = uct_ib_iface_md(iface);
-    static const unsigned ib_port_widths[] = {
-        [0] = 1,
-        [1] = 4,
-        [2] = 8,
-        [3] = 12,
-        [4] = 16
-    };
-    uint8_t active_width, active_speed, active_mtu, width_idx;
+    static const uint8_t ib_port_widths[] =
+            {[1] = 1, [2] = 4, [4] = 8, [8] = 12, [16] = 2};
+    uct_ib_device_t *dev                 = uct_ib_iface_device(iface);
+    uct_ib_md_t *md                      = uct_ib_iface_md(iface);
+    uint8_t active_width, active_speed, active_mtu, width;
     double encoding, signal_rate, wire_speed;
-    size_t mtu, width, extra_pkt_len;
+    size_t mtu, extra_pkt_len;
     ucs_status_t status;
     double numa_latency;
 
@@ -1467,14 +1484,18 @@ ucs_status_t uct_ib_iface_query(uct_ib_iface_t *iface, size_t xport_hdr_len,
     active_speed = uct_ib_iface_port_attr(iface)->active_speed;
     active_mtu   = uct_ib_iface_port_attr(iface)->active_mtu;
 
-    /* Get active width */
-    width_idx = ucs_ilog2(active_width);
-    if (!ucs_is_pow2(active_width) ||
-        (active_width < 1) || (width_idx > 4))
-    {
-        ucs_error("Invalid active_width on %s:%d: %d",
-                  UCT_IB_IFACE_ARG(iface), active_width);
-        return UCS_ERR_IO_ERROR;
+    /*
+     * Parse active width.
+     * See IBTA section 14.2.5.6 "PortInfo", Table 164, field "LinkWidthEnabled"
+     */
+    if ((active_width >= ucs_static_array_size(ib_port_widths)) ||
+        (ib_port_widths[active_width] == 0)) {
+        ucs_warn("invalid active width on " UCT_IB_IFACE_FMT ": %d, "
+                 "assuming 1x",
+                 UCT_IB_IFACE_ARG(iface), active_width);
+        width = 1;
+    } else {
+        width = ib_port_widths[active_width];
     }
 
     iface_attr->device_addr_len = iface->addr_size;
@@ -1518,7 +1539,7 @@ ucs_status_t uct_ib_iface_query(uct_ib_iface_t *iface, size_t xport_hdr_len,
         signal_rate           = 25.78125e9;
         encoding              = 64.0/66.0;
         break;
-    case 64: /* 50g Eth */
+    case 64: /* HDR / HDR100 / 50g Eth */
         iface_attr->latency.c = 600e-9;
         signal_rate           = 25.78125e9 * 2;
         encoding              = 64.0/66.0;
@@ -1538,12 +1559,11 @@ ucs_status_t uct_ib_iface_query(uct_ib_iface_t *iface, size_t xport_hdr_len,
     iface_attr->latency.m  = 0;
 
     /* Wire speed calculation: Width * SignalRate * Encoding */
-    width                 = ib_port_widths[width_idx];
-    wire_speed            = (width * signal_rate * encoding) / 8.0;
+    wire_speed = (width * signal_rate * encoding) / 8.0;
 
     /* Calculate packet overhead  */
-    mtu                   = ucs_min(uct_ib_mtu_value((enum ibv_mtu)active_mtu),
-                                    iface->config.seg_size);
+    mtu = ucs_min(uct_ib_mtu_value((enum ibv_mtu)active_mtu),
+                  iface->config.seg_size);
 
     extra_pkt_len = UCT_IB_BTH_LEN + xport_hdr_len +  UCT_IB_ICRC_LEN + UCT_IB_VCRC_LEN + UCT_IB_DELIM_LEN;
 
