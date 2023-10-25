@@ -24,9 +24,10 @@ ucp_memh_rcache_print(ucp_mem_h memh, void *address, size_t length)
     const char UCS_V_UNUSED *type = (memh->flags & UCP_MEMH_FLAG_IMPORTED) ?
                                     "imported " : "";
 
-    ucs_trace("%smemh %p: address %p/%p length %zu/%zu md_map %" PRIx64
-              " obtained from rcache", type, memh, address,
-              ucp_memh_address(memh), length, ucp_memh_length(memh),
+    ucs_trace("%smemh %p: address %p/%p length %zu/%zu %s md_map %" PRIx64
+              " obtained from rcache",
+              type, memh, address, ucp_memh_address(memh), length,
+              ucp_memh_length(memh), ucs_memory_type_names[memh->mem_type],
               memh->md_map);
 }
 
@@ -73,8 +74,10 @@ not_found:
 }
 
 static UCS_F_ALWAYS_INLINE void
-ucp_memh_put(ucp_context_h context, ucp_mem_h memh)
+ucp_memh_put(ucp_mem_h memh)
 {
+    ucp_context_h context = memh->context;
+
     ucs_trace("memh %p: release address %p length %zu md_map %" PRIx64,
               memh, ucp_memh_address(memh), ucp_memh_length(memh),
               memh->md_map);
