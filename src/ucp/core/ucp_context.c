@@ -10,7 +10,6 @@
 #endif
 
 #include "ucp_context.h"
-#include "ucp_mm.inl"
 #include "ucp_request.h"
 
 #include <ucs/config/parser.h>
@@ -417,8 +416,13 @@ static ucs_config_field_t ucp_context_config_table[] = {
    ucs_offsetof(ucp_context_config_t, worker_addr_version),
    UCS_CONFIG_TYPE_ENUM(ucp_object_versions)},
 
-  {"PROTO_INFO", "n", "Enable printing protocols information.",
-   ucs_offsetof(ucp_context_config_t, proto_info), UCS_CONFIG_TYPE_BOOL},
+  {"PROTO_INFO", "n",
+   "Enable printing protocols information. The value is interpreted as follows:\n"
+   " 'y'          : Print information for all protocols\n"
+   " 'n'          : Do not print any protocol information\n"
+   " glob_pattern : Print information for operations matching the glob pattern.\n"
+   "                For example: '*tag*gpu*', '*put*fast*host*'",
+   ucs_offsetof(ucp_context_config_t, proto_info), UCS_CONFIG_TYPE_STRING},
 
   {"RNDV_ALIGN_THRESH", "64kB",
    "If the rendezvous payload size is larger than this value, it could be split\n"
@@ -1475,6 +1479,31 @@ out:
     return status;
 }
 
+static void ucp_fill_resources_reg_md_map_update(ucp_context_h context)
+{
+    UCS_STRING_BUFFER_ONSTACK(strb, 256);
+    ucs_memory_type_t mem_type;
+    ucp_md_index_t md_index;
+
+    /* If we have a dmabuf provider for a memory type, it means we can register
+     * memory of this type with any md that supports dmabuf registration. */
+    ucs_memory_type_for_each(mem_type) {
+        if (context->dmabuf_mds[mem_type] != UCP_NULL_RESOURCE) {
+            context->reg_md_map[mem_type] |= context->dmabuf_reg_md_map;
+        }
+
+        ucs_string_buffer_reset(&strb);
+        ucs_for_each_bit(md_index, context->reg_md_map[mem_type]) {
+            ucs_string_buffer_appendf(&strb, "%s, ",
+                                      context->tl_mds[md_index].rsc.md_name);
+        }
+        ucs_string_buffer_rtrim(&strb, ", ");
+
+        ucs_debug("register %s memory on: %s", ucs_memory_type_names[mem_type],
+                  ucs_string_buffer_cstr(&strb));
+    }
+}
+
 static ucs_status_t ucp_fill_resources(ucp_context_h context,
                                        const ucp_config_t *config)
 {
@@ -1505,6 +1534,8 @@ static ucs_status_t ucp_fill_resources(ucp_context_h context,
         context->dmabuf_mds[mem_type]     = UCP_NULL_RESOURCE;
         context->alloc_md_index[mem_type] = UCP_NULL_RESOURCE;
     }
+
+    context->alloc_md_index_initialized = 0;
 
     ucs_string_set_init(&avail_tls);
     UCS_STATIC_ASSERT(UCT_DEVICE_TYPE_NET == 0);
@@ -1578,13 +1609,7 @@ static ucs_status_t ucp_fill_resources(ucp_context_h context,
         }
     }
 
-    /* Update registration memory domain map for host memory type taking into
-     * account result of uct_md_mem_reg. */
-    status = ucp_mem_reg_md_map_update(context);
-    if (status != UCS_OK) {
-        ucs_error("could not update reg md map: %s", ucs_status_string(status));
-        goto err_free_resources;
-    }
+    ucp_fill_resources_reg_md_map_update(context);
 
     /* If unified mode is enabled, initialize tl_bitmap to 0.
      * Then the worker will open all available transport resources and will

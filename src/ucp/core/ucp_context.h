@@ -157,7 +157,7 @@ typedef struct ucp_context_config {
     /** Threshold for enabling RNDV data split alignment */
     size_t                                 rndv_align_thresh;
     /** Print protocols information */
-    int                                    proto_info;
+    char                                   *proto_info;
     /** MD to compare for transport selection scores */
     char                                   *select_distance_md;
     /** Directory to write protocol selection information */
@@ -274,6 +274,7 @@ typedef struct ucp_context {
 
     /* Index of memory domain that is used to allocate memory of the given type
      * using ucp_memh_alloc(). */
+    int                           alloc_md_index_initialized;
     ucp_md_index_t                alloc_md_index[UCS_MEMORY_TYPE_LAST];
 
     /* Map of MDs that provide registration for given memory type,
