@@ -35,8 +35,9 @@
  * ucs_topo_get_memory_distance function by topology modules.
  * This function estimates the distance between the device and the system
  * memory used by the current thread according to its CPU affinity.
+ * The function must have a fallback behavior.
  */
-typedef ucs_status_t (*ucs_topo_get_memory_distance_func_t)(
+typedef void (*ucs_topo_get_memory_distance_func_t)(
         ucs_sys_device_t device, ucs_sys_dev_distance_t *distance);
 
 /*
@@ -136,13 +137,11 @@ ucs_topo_get_distance_default(ucs_sys_device_t device1,
     return UCS_OK;
 }
 
-static ucs_status_t
+static void
 ucs_topo_get_memory_distance_default(ucs_sys_device_t device,
                                      ucs_sys_dev_distance_t *distance)
 {
     *distance = ucs_topo_default_distance;
-
-    return UCS_OK;
 }
 
 static ucs_sys_topo_provider_t ucs_sys_topo_provider_default = {
@@ -162,12 +161,12 @@ ucs_status_t ucs_topo_get_distance(ucs_sys_device_t device1,
     return provider->ops.get_distance(device1, device2, distance);
 }
 
-ucs_status_t ucs_topo_get_memory_distance(ucs_sys_device_t device,
-                                          ucs_sys_dev_distance_t *distance)
+void ucs_topo_get_memory_distance(ucs_sys_device_t device,
+                                  ucs_sys_dev_distance_t *distance)
 {
     const ucs_sys_topo_provider_t *provider = ucs_sys_topo_get_provider();
 
-    return provider->ops.get_memory_distance(device, distance);
+    provider->ops.get_memory_distance(device, distance);
 }
 
 static ucs_bus_id_bit_rep_t
@@ -257,7 +256,7 @@ ucs_status_t ucs_topo_get_device_bus_id(ucs_sys_device_t sys_dev,
 }
 
 static ucs_status_t
-ucs_topo_get_sysfs_path(ucs_sys_device_t sys_dev, char *path, size_t max)
+ucs_topo_sys_dev_to_sysfs_path(ucs_sys_device_t sys_dev, char *path, size_t max)
 {
     const size_t prefix_length = strlen(UCS_TOPO_SYSFS_PCI_PREFIX);
     char link_path[PATH_MAX];
@@ -349,12 +348,12 @@ ucs_topo_get_distance_sysfs(ucs_sys_device_t device1,
         return UCS_OK;
     }
 
-    status = ucs_topo_get_sysfs_path(device1, path1, sizeof(path1));
+    status = ucs_topo_sys_dev_to_sysfs_path(device1, path1, sizeof(path1));
     if (status != UCS_OK) {
         return status;
     }
 
-    status = ucs_topo_get_sysfs_path(device2, path2, sizeof(path2));
+    status = ucs_topo_sys_dev_to_sysfs_path(device2, path2, sizeof(path2));
     if (status != UCS_OK) {
         return status;
     }
@@ -371,9 +370,8 @@ ucs_topo_get_distance_sysfs(ucs_sys_device_t device1,
     return UCS_OK;
 }
 
-static ucs_status_t
-ucs_topo_get_memory_distance_sysfs(ucs_sys_device_t device,
-                                   ucs_sys_dev_distance_t *distance)
+static void ucs_topo_get_memory_distance_sysfs(ucs_sys_device_t device,
+                                               ucs_sys_dev_distance_t *distance)
 {
     double total_distance = 0;
     int full_affinity     = 0;
@@ -382,15 +380,18 @@ ucs_topo_get_memory_distance_sysfs(ucs_sys_device_t device,
     char path[PATH_MAX];
     ucs_numa_node_t dev_node;
     ucs_status_t status;
+    const char *dev_name;
 
     /* If the device is unknown, we assume min distance */
     if (device == UCS_SYS_DEVICE_ID_UNKNOWN) {
-        return ucs_topo_get_memory_distance_default(device, distance);
+        ucs_topo_get_memory_distance_default(device, distance);
+        return;
     }
 
-    status = ucs_topo_get_sysfs_path(device, path, sizeof(path));
+    status = ucs_topo_sys_dev_to_sysfs_path(device, path, sizeof(path));
     if (status != UCS_OK) {
-        return ucs_topo_get_memory_distance_default(device, distance);
+        ucs_topo_get_memory_distance_default(device, distance);
+        return;
     }
 
     status = ucs_sys_pthread_getaffinity(&thread_cpuset);
@@ -408,16 +409,14 @@ ucs_topo_get_memory_distance_sysfs(ucs_sys_device_t device,
         }
 
         total_distance += ucs_numa_distance(dev_node,
-                                            ucs_numa_node_of_cpu_v2(cpu));
+                                            ucs_numa_node_of_cpu(cpu));
     }
 
-    /* Calculate root distance to get the correct BW value */
-    ucs_topo_sys_root_distance(distance);
-    cpuset_size       = full_affinity ? num_cpus : CPU_COUNT(&thread_cpuset);
+    dev_name            = ucs_topo_sys_device_get_name(device);
+    distance->bandwidth = ucs_topo_get_pci_bw(dev_name, path);
+    cpuset_size         = full_affinity ? num_cpus : CPU_COUNT(&thread_cpuset);
     distance->latency = ucs_topo_sysfs_numa_distance_to_latency(total_distance /
                                                                 cpuset_size);
-
-    return UCS_OK;
 }
 
 const char *ucs_topo_distance_str(const ucs_sys_dev_distance_t *distance,
@@ -741,4 +740,52 @@ double ucs_topo_get_pci_bw(const char *dev_name, const char *sysfs_path)
 out_max_bw:
     ucs_debug("%s: pci bandwidth undetected, using maximal value", dev_name);
     return DBL_MAX;
+}
+
+const char *ucs_topo_resolve_sysfs_path(const char *dev_path, char *path_buffer)
+{
+    const char *detected_type = NULL;
+    char device_file_path[PATH_MAX];
+    char *sysfs_realpath;
+    struct stat st_buf;
+    char *sysfs_path;
+
+    /* realpath name is expected to be like below:
+     * PF: /sys/devices/.../0000:03:00.0/<interface_type>/<dev_name>
+     * SF: /sys/devices/.../0000:03:00.0/<UUID>/<interface_type>/<dev_name>
+     */
+
+    sysfs_realpath = realpath(dev_path, path_buffer);
+    if (sysfs_realpath == NULL) {
+        goto out_undetected;
+    }
+
+    /* Try PF: strip 2 components */
+    sysfs_path = ucs_dirname(sysfs_realpath, 2);
+    ucs_snprintf_safe(device_file_path, sizeof(device_file_path), "%s/device",
+                      sysfs_path);
+
+    if (!stat(device_file_path, &st_buf)) {
+        detected_type = "PF";
+        goto out_detected;
+    }
+
+    /* Try SF: strip 3 components (one more) */
+    sysfs_path = ucs_dirname(sysfs_path, 1);
+    ucs_snprintf_safe(device_file_path, sizeof(device_file_path), "%s/device",
+                      sysfs_path);
+
+    if (!stat(device_file_path, &st_buf)) {
+        detected_type = "SF";
+        goto out_detected;
+    }
+
+out_undetected:
+    ucs_debug("%s: sysfs path undetected", dev_path);
+    return NULL;
+
+out_detected:
+    ucs_debug("%s: %s sysfs path is '%s'\n", dev_path, detected_type,
+              sysfs_path);
+    return sysfs_path;
 }

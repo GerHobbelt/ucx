@@ -116,11 +116,10 @@ ucs_status_t ucs_topo_get_distance(ucs_sys_device_t device1,
  *
  * @param [in]  device   System device index.
  * @param [out] distance Result populated with the device memory distance.
- *
- * @return UCS_OK or error in case distance cannot be determined.
+
  */
-ucs_status_t ucs_topo_get_memory_distance(ucs_sys_device_t device,
-                                          ucs_sys_dev_distance_t *distance);
+void ucs_topo_get_memory_distance(ucs_sys_device_t device,
+                                  ucs_sys_dev_distance_t *distance);
 
 
 /**
@@ -200,6 +199,19 @@ ucs_status_t ucs_topo_sys_device_set_name(ucs_sys_device_t sys_dev,
  */
 double ucs_topo_get_pci_bw(const char *dev_name, const char *sysfs_path);
 
+
+/**
+ * Returns sysfs path of a given device. for example:
+ * input:  '/sys/class/infiniband/mlx5_1'
+ * output: '/sys/devices/pci0000:80/0000:80:01.1/0000:83:00.0'
+ *
+ * @param [in]  dev_path    Device file path.
+ * @param [out] path_buffer Filled with the result path.
+ *
+ * @return Pointer to sysfs path or NULL on error.
+ */
+const char *
+ucs_topo_resolve_sysfs_path(const char *dev_path, char *path_buffer);
 
 /**
  * Get the name of a given system device. If the name was never set, it defaults

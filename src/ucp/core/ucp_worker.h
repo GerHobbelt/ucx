@@ -236,6 +236,7 @@ struct ucp_worker_iface {
     ucp_worker_h                  worker;        /* The parent worker */
     ucs_list_link_t               arm_list;      /* Element in arm_ifaces list */
     ucp_rsc_index_t               rsc_index;     /* Resource index */
+    ucs_sys_dev_distance_t        distance;      /* Distance from given MD */
     int                           event_fd;      /* Event FD, or -1 if undefined */
     unsigned                      activate_count;/* How many times this iface has
                                                     been activated */
@@ -409,6 +410,15 @@ void ucp_worker_vfs_refresh(void *obj);
 ucs_status_t ucp_worker_discard_uct_ep_pending_cb(uct_pending_req_t *self);
 
 unsigned ucp_worker_discard_uct_ep_progress(void *arg);
+
+
+ucs_status_t ucp_worker_iface_estimate_perf(const ucp_worker_iface_t *wiface,
+                                            uct_perf_attr_t *perf_attr);
+
+
+void ucp_worker_iface_add_bandwidth(uct_ppn_bandwidth_t *ppn_bandwidth,
+                                    double bandwidth);
+
 
 /* must be called with async lock held */
 static UCS_F_ALWAYS_INLINE void
