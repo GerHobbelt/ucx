@@ -132,7 +132,7 @@ static int uct_cuda_ipc_get_device_nvlinks(int ordinal)
         return num_nvlinks;
     }
 
-    status = UCT_NVML_FUNC_LOG_ERR(nvmlInit_v2());
+    status = UCT_NVML_FUNC(nvmlInit_v2(), UCS_LOG_LEVEL_DIAG);
     if (status != UCS_OK) {
         goto err;
     }
@@ -385,7 +385,7 @@ static void uct_cuda_ipc_event_desc_cleanup(ucs_mpool_t *mp, void *obj)
 
     UCT_CUDADRV_FUNC_LOG_ERR(cuCtxGetCurrent(&cuda_context));
     if (uct_cuda_base_context_match(cuda_context, iface->cuda_context)) {
-        UCT_CUDA_FUNC_LOG_ERR(cudaEventDestroy(base->event));
+        UCT_CUDA_CALL_LOG_ERR(cudaEventDestroy, base->event);
     }
 }
 

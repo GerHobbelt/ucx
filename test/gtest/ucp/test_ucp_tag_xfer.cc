@@ -48,10 +48,6 @@ public:
     }
 
     virtual void init() {
-        if (RUNNING_ON_VALGRIND && (get_variant_value() == VARIANT_PROTO_V1)) {
-            UCS_TEST_SKIP_R("Skip proto v1 with valgrind");
-        }
-
         if (get_variant_value() == VARIANT_RNDV_PUT_ZCOPY) {
             modify_config("RNDV_SCHEME", "put_zcopy");
         } else if (get_variant_value() == VARIANT_RNDV_GET_ZCOPY) {
@@ -97,8 +93,10 @@ public:
                                VARIANT_RNDV_AM_ZCOPY, "rndv_am_zcopy");
         add_variant_with_value(variants, get_ctx_params(),
                                VARIANT_SEND_NBR, "send_nbr");
-        add_variant_with_value(variants, get_ctx_params(), VARIANT_PROTO_V1,
-                               "proto_v1");
+        if (!RUNNING_ON_VALGRIND) {
+            add_variant_with_value(variants, get_ctx_params(), VARIANT_PROTO_V1,
+                                   "proto_v1");
+        }
     }
 
     virtual ucp_ep_params_t get_ep_params() {
@@ -144,6 +142,7 @@ protected:
                          bool expected, bool sync);
 
     void test_xfer_len_offset();
+    size_t get_msg_size();
 
     /* Init number of lanes which will be used */
     virtual unsigned num_lanes()
@@ -153,7 +152,6 @@ protected:
 
 private:
     request* do_send(const void *sendbuf, size_t count, ucp_datatype_t dt, bool sync);
-    size_t get_msg_size();
 
     static const uint64_t SENDER_TAG = 0x111337;
     static const uint64_t RECV_MASK  = 0xffff;
@@ -1237,17 +1235,20 @@ UCS_TEST_P(multi_rail_max, max_lanes, "IB_NUM_PATHS?=16", "TM_SW_RNDV=y",
     ASSERT_EQ(ucp_ep_num_lanes(receiver().ep()), num_lanes);
     ASSERT_EQ(num_lanes, max_lanes);
 
+    size_t chunk_size = get_msg_size() / num_lanes;
+
     for (ucp_lane_index_t lane = 0; lane < num_lanes; ++lane) {
         size_t sender_tx   = get_bytes_sent(sender().ep(), lane);
         size_t receiver_tx = get_bytes_sent(receiver().ep(), lane);
         UCS_TEST_MESSAGE << "lane[" << static_cast<int>(lane) << "] : "
-                         << "sender " << sender_tx << " receiver " << sender_tx;
+                         << "sender " << sender_tx << " receiver " << receiver_tx;
 
         /* Verify that each lane sent something, except the active message lane
            that could be used only for control messages */
-        if (lane != ucp_ep_get_am_lane(sender().ep())) {
-            EXPECT_GE(sender_tx + receiver_tx,
-                      50000 / ucs::test_time_multiplier());
+        if (lane == num_lanes - 1) {
+            EXPECT_GT(sender_tx + receiver_tx, 0); // last lane sends the rest
+        } else if (lane != ucp_ep_get_am_lane(sender().ep())) {
+            EXPECT_GE(sender_tx + receiver_tx, chunk_size);
         }
     }
 }
