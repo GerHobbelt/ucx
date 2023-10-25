@@ -1092,12 +1092,12 @@ ucp_add_tl_resources(ucp_context_h context, ucp_md_index_t md_index,
     status = uct_md_query_tl_resources(md->md, &tl_resources, &num_tl_resources);
     if (status != UCS_OK) {
         ucs_error("Failed to query resources: %s", ucs_status_string(status));
-        goto err;
+        goto out;
     }
 
     if (num_tl_resources == 0) {
         ucs_debug("No tl resources found for md %s", md->rsc.md_name);
-        goto out_free_resources;
+        goto free_resources;
     }
 
     tmp = ucs_realloc(context->tl_rscs,
@@ -1107,7 +1107,7 @@ ucp_add_tl_resources(ucp_context_h context, ucp_md_index_t md_index,
     if (tmp == NULL) {
         ucs_error("Failed to allocate resources");
         status = UCS_ERR_NO_MEMORY;
-        goto err_free_resources;
+        goto free_resources;
     }
 
     /* print configuration */
@@ -1127,13 +1127,10 @@ ucp_add_tl_resources(ucp_context_h context, ucp_md_index_t md_index,
                                        dev_cfg_masks, tl_cfg_mask);
     }
 
-out_free_resources:
+    status = UCS_OK;
+free_resources:
     uct_release_tl_resource_list(tl_resources);
-    return UCS_OK;
-
-err_free_resources:
-    uct_release_tl_resource_list(tl_resources);
-err:
+out:
     return status;
 }
 
@@ -1247,8 +1244,6 @@ static void ucp_free_resources(ucp_context_t *context)
 
 static ucs_status_t ucp_check_resource_config(const ucp_config_t *config)
 {
-     /* if we got here then num_resources > 0.
-      * if the user's device list is empty, there is no match */
      if ((0 == config->devices[UCT_DEVICE_TYPE_NET].count) &&
          (0 == config->devices[UCT_DEVICE_TYPE_SHM].count) &&
          (0 == config->devices[UCT_DEVICE_TYPE_ACC].count) &&
@@ -1258,8 +1253,6 @@ static ucs_status_t ucp_check_resource_config(const ucp_config_t *config)
          return UCS_ERR_NO_ELEM;
      }
 
-     /* if we got here then num_resources > 0.
-      * if the user's tls list is empty, there is no match */
      if ((0 == config->tls.array.count) &&
          (config->tls.mode != UCS_CONFIG_ALLOW_LIST_ALLOW_ALL)) {
          ucs_error("The TLs list is empty. Please specify the transports you "
@@ -1636,7 +1629,7 @@ static ucs_status_t ucp_fill_resources(ucp_context_h context,
     context->num_mem_type_detect_mds  = 0;
     context->export_md_map            = 0;
 
-    for (mem_type = 0; mem_type < UCS_MEMORY_TYPE_LAST; ++mem_type) {
+    ucs_memory_type_for_each(mem_type) {
         context->reg_md_map[mem_type]     = 0;
         context->cache_md_map[mem_type]   = 0;
         context->dmabuf_mds[mem_type]     = UCP_NULL_RESOURCE;
@@ -1828,7 +1821,7 @@ ucp_fill_rndv_frag_config(const ucp_context_config_names_t *config,
     ssize_t mem_type;
     unsigned i;
 
-    for (mem_type = 0; mem_type < UCS_MEMORY_TYPE_LAST; ++mem_type) {
+    ucs_memory_type_for_each(mem_type) {
         sizes[mem_type] = default_sizes[mem_type];
     }
 
