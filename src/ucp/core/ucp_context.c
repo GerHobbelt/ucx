@@ -304,9 +304,11 @@ static ucs_config_field_t ucp_context_config_table[] = {
    ucs_offsetof(ucp_context_config_t, tm_force_thresh), UCS_CONFIG_TYPE_MEMUNITS},
 
   {"TM_SW_RNDV", "n",
-   "Use software rendezvous protocol with tag offload. If enabled, tag offload\n"
-   "mode will be used for messages sent with eager protocol only.",
-   ucs_offsetof(ucp_context_config_t, tm_sw_rndv), UCS_CONFIG_TYPE_BOOL},
+   "Use software rendezvous protocol even when tag matching offload is enabled.\n"
+   "In this case tag matching offload will be used for messages sent with eager\n"
+   "protocol only. If the value is set to \"try\", the rendezvous protocol is\n"
+   "selected automatically according to the performance characteristics.",
+   ucs_offsetof(ucp_context_config_t, tm_sw_rndv), UCS_CONFIG_TYPE_TERNARY},
 
   {"NUM_EPS", "auto",
    "An optimization hint of how many endpoints would be created on this context.\n"
@@ -1590,6 +1592,12 @@ static void ucp_fill_resources_reg_md_map_update(ucp_context_h context)
     ucs_memory_type_for_each(mem_type) {
         if (context->dmabuf_mds[mem_type] != UCP_NULL_RESOURCE) {
             context->reg_md_map[mem_type] |= context->dmabuf_reg_md_map;
+        }
+
+        if (context->reg_md_map[mem_type] == 0) {
+            ucs_debug("no memory domain supports registering %s memory",
+                      ucs_memory_type_names[mem_type]);
+            continue;
         }
 
         ucs_string_buffer_reset(&strb);
