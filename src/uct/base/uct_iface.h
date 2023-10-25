@@ -115,6 +115,40 @@ enum {
         return UCS_ERR_INVALID_PARAM; \
     }
 
+/**
+ * Returns 0 if @a _params field mask does not have the required flags set.
+ */
+#define UCT_PARAMS_CHECK_FIELD_MASK(_params, _required_fields, _err_message, \
+                                    ...) \
+    if (!ucs_test_all_flags((_params)->field_mask, _required_fields)) { \
+        ucs_error(_err_message, ##__VA_ARGS__); \
+        return 0; \
+    }
+
+/**
+ * Returns 0 if @a _params field mask does not have
+ * @ref UCT_EP_IS_CONNECTED_FIELD_DEVICE_ADDR and @ref UCT_EP_IS_CONNECTED_FIELD_IFACE_ADDR
+ * flags set.
+ */
+#define UCT_EP_IS_CONNECTED_CHECK_DEV_IFACE_ADDRS(_params) \
+    UCT_PARAMS_CHECK_FIELD_MASK( \
+            _params, \
+            UCT_EP_IS_CONNECTED_FIELD_DEVICE_ADDR | \
+                    UCT_EP_IS_CONNECTED_FIELD_IFACE_ADDR, \
+            "missing params (field_mask: %lu), both device_addr and " \
+            "iface_addr must be provided.", \
+            params->field_mask)
+
+/**
+ * Returns 0 if @a _params field mask does not have
+ * @ref UCT_EP_IS_CONNECTED_FIELD_DEVICE_ADDR flag set.
+ */
+#define UCT_EP_IS_CONNECTED_CHECK_DEV_ADDR(_params) \
+    UCT_PARAMS_CHECK_FIELD_MASK( \
+            _params, UCT_EP_IS_CONNECTED_FIELD_DEVICE_ADDR, \
+            "missing params (field_mask: %lu), device_addr " \
+            "must be provided.", \
+            params->field_mask)
 
 /**
  * In release mode - do nothing.
@@ -854,6 +888,9 @@ void uct_base_iface_progress_disable(uct_iface_h tl_iface, unsigned flags);
 
 ucs_status_t
 uct_base_iface_estimate_perf(uct_iface_h iface, uct_perf_attr_t *perf_attr);
+
+int uct_base_ep_is_connected(const uct_ep_h tl_ep,
+                             const uct_ep_is_connected_params_t *params);
 
 int uct_base_iface_is_reachable(const uct_iface_h tl_iface,
                                 const uct_device_addr_t *dev_addr,
