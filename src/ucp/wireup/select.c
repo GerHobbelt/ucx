@@ -494,7 +494,9 @@ static UCS_F_NOINLINE ucs_status_t ucp_wireup_select_transport(
         } else if (ucp_wireup_connect_p2p(worker, rsc_index, has_cm)) {
             /* We should not need MD invalidate support for p2p lanes, since
              * both sides close the connection in case of error */
-            local_md_flags &= ~UCT_MD_FLAG_INVALIDATE;
+            local_md_flags &= ~(UCT_MD_FLAG_INVALIDATE     |
+                                UCT_MD_FLAG_INVALIDATE_RMA |
+                                UCT_MD_FLAG_INVALIDATE_AMO);
         }
 
         /* Check that local md and interface satisfy the criteria */
@@ -1747,7 +1749,7 @@ ucp_wireup_add_rma_bw_lanes(const ucp_wireup_select_params_t *select_params,
     /* If error handling is requested we require memory invalidation
      * support to provide correct data integrity in case of error */
     if (ep_init_flags & UCP_EP_INIT_ERR_MODE_PEER_FAILURE) {
-        bw_info.criteria.local_md_flags |= UCT_MD_FLAG_INVALIDATE;
+        bw_info.criteria.local_md_flags |= UCT_MD_FLAG_INVALIDATE_RMA;
     }
 
     /* RNDV protocol can't mix different schemes, i.e. wireup has to
@@ -2106,7 +2108,6 @@ static ucs_status_t ucp_wireup_select_set_locality_flags(
     ucp_worker_h worker = select_params->ep->worker;
     ucp_worker_iface_t *wiface;
     ucp_rsc_index_t rsc_index;
-    ucp_rsc_index_t iface_id;
     ucp_address_entry_t *ae;
     ucp_lane_index_t lane;
     ucs_status_t status;
@@ -2129,9 +2130,14 @@ static ucs_status_t ucp_wireup_select_set_locality_flags(
     }
 
     /* If the local context matching at least one remote device address, it's
-       intra-node */
-    for (iface_id = 0; iface_id < worker->num_ifaces; ++iface_id) {
-        wiface = worker->ifaces[iface_id];
+       intra-node. Only selected lanes are compared to verify reachability. */
+    for (lane = 0; lane < key->num_lanes; ++lane) {
+        rsc_index = key->lanes[lane].rsc_index;
+        if (rsc_index == UCP_NULL_RESOURCE) {
+            continue;
+        }
+
+        wiface = ucp_worker_iface(worker, rsc_index);
         if (wiface->attr.device_addr_len == 0) {
             continue;
         }
