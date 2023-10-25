@@ -439,12 +439,9 @@ static int ucp_ep_has_wireup_msg_pending(ucp_ep_h ucp_ep)
 
 static void ucp_wireup_eps_progress_sched(ucp_ep_h ucp_ep)
 {
-    uct_worker_cb_id_t prog_id = UCS_CALLBACKQ_ID_NULL;
-
     /* Use one-shot mode to avoid the need to save prog_id */
-    uct_worker_progress_register_safe(ucp_ep->worker->uct,
-                                      ucp_wireup_eps_progress, ucp_ep,
-                                      UCS_CALLBACKQ_FLAG_ONESHOT, &prog_id);
+    ucs_callbackq_add_oneshot(&ucp_ep->worker->uct->progress_q, ucp_ep,
+                              ucp_wireup_eps_progress, ucp_ep);
     ucp_worker_signal_internal(ucp_ep->worker);
 }
 
@@ -755,7 +752,6 @@ ucp_wireup_process_reply(ucp_worker_h worker, ucp_ep_h ep,
                          const ucp_wireup_msg_t *msg,
                          const ucp_unpacked_address_t *remote_address)
 {
-    uct_worker_cb_id_t cb_id = UCS_CALLBACKQ_ID_NULL;
     ucs_status_t status;
     int ack;
 
@@ -793,9 +789,8 @@ ucp_wireup_process_reply(ucp_worker_h worker, ucp_ep_h ep,
     if (ack) {
         /* Send `UCP_WIREUP_MSG_ACK` from progress function
          * to avoid calling UCT routines from an async thread */
-        uct_worker_progress_register_safe(worker->uct,
-                                          ucp_wireup_send_msg_ack, ep,
-                                          UCS_CALLBACKQ_FLAG_ONESHOT, &cb_id);
+        ucs_callbackq_add_oneshot(&worker->uct->progress_q, ep,
+                                  ucp_wireup_send_msg_ack, ep);
     }
 }
 
@@ -1015,11 +1010,23 @@ static int ucp_wireup_should_activate_wiface(ucp_worker_iface_t *wiface,
     /* Activate worker iface if: a) new protocol selection logic is disabled; or
      * b) stream support is requested, because stream API does not support new
      * protocol selection logic; or c) lane is used for checking a connection
-     * state; or d) the endpoint is a mem-type ep. */
+     * state; or d) the endpoint is a mem-type ep; or e) iface was activated
+     * before (some ep was created and later destroyed). The last check is
+     * needed to workaround the following problem with proto v2:
+     * 1. ep is created using some ep config
+     * 2. Some protocols are selected for some operations and this enables
+     *    progress for the affected lanes
+     * 3. ep is destroyed and progress is disabled for all corresponding ifaces
+     * 4. New ep is created with the same ep config used during step n1
+     * 5. Progress is not enabled, because protocols selection for these
+     *    parameters (and ep config) was already done on step n2.
+     * TODO: Reconsider this approach when progress enabling scheme changes. */
+
     return !context->config.ext.proto_enable ||
            (context->config.features & UCP_FEATURE_STREAM) ||
            (ucp_ep_config(ep)->key.keepalive_lane == lane) ||
-           (ep->flags & UCP_EP_FLAG_INTERNAL);
+           (ep->flags & UCP_EP_FLAG_INTERNAL) ||
+           (wiface->flags & UCP_WORKER_IFACE_FLAG_KEEP_ACTIVE);
 }
 
 static ucs_status_t
