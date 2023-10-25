@@ -92,7 +92,6 @@ typedef struct uct_ib_md_ext_config {
     struct {
         int                  prefetch;     /**< Auto-prefetch non-blocking memory
                                                 registrations / allocations */
-        size_t               max_size;     /**< Maximal memory region size for ODP */
     } odp;
 
     unsigned long            gid_index;    /**< IB GID index to use */
@@ -156,6 +155,7 @@ typedef struct uct_ib_md {
     int                      fork_init;
     size_t                   memh_struct_size;
     uint64_t                 reg_mem_types;
+    uint64_t                 reg_nonblock_mem_types;
     uint64_t                 cap_flags;
     char                     *name;
     /* flush_remote rkey is used as atomic_mr_id value (8-16 bits of rkey)
