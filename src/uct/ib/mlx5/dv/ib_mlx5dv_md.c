@@ -822,7 +822,7 @@ static struct ibv_context *
 uct_ib_mlx5_devx_open_device(struct ibv_device *ibv_device)
 {
     struct mlx5dv_context_attr dv_attr = {};
-    struct mlx5dv_devx_event_channel UCS_V_UNUSED *event_channel;
+    struct mlx5dv_devx_event_channel *event_channel;
     struct ibv_context *ctx;
     struct ibv_cq *cq;
 
@@ -1738,7 +1738,7 @@ static ucs_status_t uct_ib_mlx5dv_md_open(struct ibv_device *ibv_device,
         goto err_md_free;
     }
 
-    if (IBV_HAVE_ATOMIC_HCA(&dev->dev_attr)) {
+    if (IBV_DEVICE_ATOMIC_HCA(dev)) {
         dev->atomic_arg_sizes = sizeof(uint64_t);
 
 #if HAVE_STRUCT_IBV_DEVICE_ATTR_EX_PCI_ATOMIC_CAPS
