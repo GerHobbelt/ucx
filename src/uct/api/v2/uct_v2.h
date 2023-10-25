@@ -93,7 +93,10 @@ enum uct_perf_attr_field {
     UCT_PERF_ATTR_FIELD_LATENCY            = UCS_BIT(9),
 
     /** Enable @ref uct_perf_attr_t::max_inflight_eps */
-    UCT_PERF_ATTR_FIELD_MAX_INFLIGHT_EPS   = UCS_BIT(10)
+    UCT_PERF_ATTR_FIELD_MAX_INFLIGHT_EPS   = UCS_BIT(10),
+
+    /** Enables @ref uct_perf_attr_t::progress_overhead */
+    UCT_PERF_ATTR_FIELD_PROGRESS_OVERHEAD  = UCS_BIT(11),
 };
 
 
@@ -166,6 +169,12 @@ typedef struct {
      * This field is set by the UCT layer.
      */
     double              recv_overhead;
+
+    /**
+     * This is the time spent progressing the iface, in seconds.
+     * This field is set by the UCT layer.
+     */
+    double              progress_overhead;
 
     /**
      * Bandwidth model. This field is set by the UCT layer.
