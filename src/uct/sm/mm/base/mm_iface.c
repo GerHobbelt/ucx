@@ -197,6 +197,7 @@ uct_mm_progress_fifo_tail(uct_mm_iface_t *iface)
         return;
     }
 
+    ucs_memory_cpu_store_fence();
     iface->recv_fifo_ctl->tail = iface->read_index;
 }
 
