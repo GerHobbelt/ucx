@@ -1,4 +1,4 @@
 [submodule "ucg"]
 	path = src/ucg
-	url = https://github.com/kunpengcompute/xucg.git
-	branch = huawei-dev
+	url = https://github.com/openucx/xucg.git
+	branch = master

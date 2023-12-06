@@ -377,9 +377,11 @@ void ucp_rkey_destroy(ucp_rkey_h rkey)
 
     rkey_index = 0;
     ucs_for_each_bit(remote_md_index, rkey->md_map) {
-        uct_rkey_release(rkey->tl_rkey[rkey_index].cmpt,
-                         &rkey->tl_rkey[rkey_index].rkey);
-        ++rkey_index;
+        if (rkey->tl_rkey[rkey_index].rkey.rkey != UCT_INVALID_RKEY) {
+            uct_rkey_release(rkey->tl_rkey[rkey_index].cmpt,
+                             &rkey->tl_rkey[rkey_index].rkey);
+            ++rkey_index;
+        }
     }
 
     if (rkey->flags & UCP_RKEY_DESC_FLAG_POOL) {
