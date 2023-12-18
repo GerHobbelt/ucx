@@ -104,7 +104,7 @@ uct_ud_verbs_ep_tx_inlv(uct_ud_verbs_iface_t *iface, uct_ud_verbs_ep_t *ep,
 {
     iface->tx.sge[1].addr   = (uintptr_t)buffer;
     iface->tx.sge[1].length = length;
-    ucs_assert(iface->tx.wr_inl.num_sge == 2);
+    iface->tx.wr_inl.num_sge = 2;
     uct_ud_verbs_post_send(iface, ep, &iface->tx.wr_inl, IBV_SEND_INLINE, 2);
 }
 
@@ -367,7 +367,7 @@ uct_ud_verbs_iface_poll_rx(uct_ud_verbs_iface_t *iface, int is_async)
 
     UCT_IB_IFACE_VERBS_FOREACH_RXWQE(&iface->super.super, i, packet, wc, num_wcs) {
         if (!uct_ud_iface_check_grh(&iface->super, packet,
-                                    wc[i].wc_flags & IBV_WC_GRH)) {
+                                    wc[i].wc_flags & IBV_WC_GRH, wc[i].sl)) {
             ucs_mpool_put_inline((void*)wc[i].wr_id);
             continue;
         }
@@ -406,19 +406,18 @@ static unsigned uct_ud_verbs_iface_async_progress(uct_ud_iface_t *ud_iface)
 static unsigned uct_ud_verbs_iface_progress(uct_iface_h tl_iface)
 {
     uct_ud_verbs_iface_t *iface = ucs_derived_of(tl_iface, uct_ud_verbs_iface_t);
-    ucs_status_t status;
     unsigned count;
 
     uct_ud_enter(&iface->super);
-    uct_ud_iface_dispatch_async_comps(&iface->super);
-    status = uct_ud_iface_dispatch_pending_rx(&iface->super);
-    if (status == UCS_OK) {
+
+    count  = uct_ud_iface_dispatch_async_comps(&iface->super);
+    count += uct_ud_iface_dispatch_pending_rx(&iface->super);
+
+    if (ucs_likely(count == 0)) {
         count = uct_ud_verbs_iface_poll_rx(iface, 0);
         if (count == 0) {
-            count = uct_ud_verbs_iface_poll_tx(iface, 0);
+            count += uct_ud_verbs_iface_poll_tx(iface, 0);
         }
-    } else {
-        count = 0;
     }
 
     uct_ud_iface_progress_pending(&iface->super, 0);
@@ -638,7 +637,6 @@ static UCS_CLASS_INIT_FUNC(uct_ud_verbs_iface_t, uct_md_h md, uct_worker_h worke
     self->tx.wr_inl.imm_data          = 0;
     self->tx.wr_inl.next              = 0;
     self->tx.wr_inl.sg_list           = self->tx.sge;
-    self->tx.wr_inl.num_sge           = 2;
 
     memset(&self->tx.wr_skb, 0, sizeof(self->tx.wr_skb));
     self->tx.wr_skb.opcode            = IBV_WR_SEND;
