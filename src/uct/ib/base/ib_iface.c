@@ -91,7 +91,7 @@ ucs_config_field_t uct_ib_iface_config_table[] = {
    "enough, such as of atomic operations and small reads, will be received inline.",
    ucs_offsetof(uct_ib_iface_config_t, inl[UCT_IB_DIR_TX]), UCS_CONFIG_TYPE_MEMUNITS},
 
-  {"TX_MIN_SGE", "3",
+  {"TX_MIN_SGE", "4",
    "Number of SG entries to reserve in the send WQE.",
    ucs_offsetof(uct_ib_iface_config_t, tx.min_sge), UCS_CONFIG_TYPE_UINT},
 
@@ -758,7 +758,7 @@ static ucs_status_t uct_ib_iface_init_pkey(uct_ib_iface_t *iface,
             /* take only the lower 15 bits for the comparison */
             ((pkey & UCT_IB_PKEY_PARTITION_MASK) == config->pkey)) {
             if (!(pkey & UCT_IB_PKEY_MEMBERSHIP_MASK) &&
-                /* limited PKEY has not yet been found */ 
+                /* limited PKEY has not yet been found */
                 (lim_pkey == UCT_IB_ADDRESS_INVALID_PKEY)) {
                 lim_pkey_index = pkey_index;
                 lim_pkey       = pkey;
@@ -1479,7 +1479,7 @@ ucs_status_t uct_ib_iface_query(uct_ib_iface_t *iface, size_t xport_hdr_len,
     double numa_latency;
 
     uct_base_iface_query(&iface->super, iface_attr);
-    
+
     active_width = uct_ib_iface_port_attr(iface)->active_width;
     active_speed = uct_ib_iface_port_attr(iface)->active_speed;
     active_mtu   = uct_ib_iface_port_attr(iface)->active_mtu;

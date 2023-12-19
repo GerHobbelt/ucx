@@ -461,7 +461,8 @@ uct_ud_mlx5_iface_poll_rx(uct_ud_mlx5_iface_t *iface, int is_async)
     VALGRIND_MAKE_MEM_DEFINED(packet, len);
 
     if (!uct_ud_iface_check_grh(&iface->super, packet,
-                                uct_ib_mlx5_cqe_is_grh_present(cqe))) {
+                                uct_ib_mlx5_cqe_is_grh_present(cqe),
+                                cqe->flags_rqpn & 0xFF)) {
         ucs_mpool_put_inline(desc);
         goto out;
     }
@@ -508,23 +509,24 @@ uct_ud_mlx5_iface_poll_tx(uct_ud_mlx5_iface_t *iface, int is_async)
 static unsigned uct_ud_mlx5_iface_progress(uct_iface_h tl_iface)
 {
     uct_ud_mlx5_iface_t *iface = ucs_derived_of(tl_iface, uct_ud_mlx5_iface_t);
-    ucs_status_t status;
-    unsigned n, count = 0;
+    unsigned n, count;
 
     uct_ud_enter(&iface->super);
-    uct_ud_iface_dispatch_async_comps(&iface->super);
 
-    status = uct_ud_iface_dispatch_pending_rx(&iface->super);
-    if (ucs_likely(status == UCS_OK)) {
+    count  = uct_ud_iface_dispatch_async_comps(&iface->super);
+    count += uct_ud_iface_dispatch_pending_rx(&iface->super);
+
+    if (ucs_likely(count == 0)) {
         do {
-            n = uct_ud_mlx5_iface_poll_rx(iface, 0);
+            n      = uct_ud_mlx5_iface_poll_rx(iface, 0);
             count += n;
         } while ((n > 0) && (count < iface->super.super.config.rx_max_poll));
+        count += uct_ud_mlx5_iface_poll_tx(iface, 0);
     }
 
-    count += uct_ud_mlx5_iface_poll_tx(iface, 0);
     uct_ud_iface_progress_pending(&iface->super, 0);
     uct_ud_leave(&iface->super);
+
     return count;
 }
 

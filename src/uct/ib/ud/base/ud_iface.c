@@ -161,7 +161,7 @@ uct_ud_iface_create_qp(uct_ud_iface_t *self, const uct_ud_iface_config_t *config
     qp_init_attr.sq_sig_all          = 0;
     qp_init_attr.cap.max_send_wr     = config->super.tx.queue_len;
     qp_init_attr.cap.max_recv_wr     = config->super.rx.queue_len;
-    qp_init_attr.cap.max_send_sge    = 2;
+    qp_init_attr.cap.max_send_sge    = config->super.tx.min_sge + 1;
     qp_init_attr.cap.max_recv_sge    = 1;
     qp_init_attr.cap.max_inline_data = config->super.tx.min_inline;
 
@@ -818,8 +818,9 @@ uct_ud_send_skb_t *uct_ud_iface_ctl_skb_get(uct_ud_iface_t *iface)
     return skb;
 }
 
-void uct_ud_iface_dispatch_async_comps_do(uct_ud_iface_t *iface)
+unsigned uct_ud_iface_dispatch_async_comps_do(uct_ud_iface_t *iface)
 {
+    unsigned count = 0;
     uct_ud_comp_desc_t *cdesc;
     uct_ud_send_skb_t *skb;
 
@@ -828,7 +829,10 @@ void uct_ud_iface_dispatch_async_comps_do(uct_ud_iface_t *iface)
         cdesc = uct_ud_comp_desc(skb);
         uct_ud_iface_dispatch_comp(iface, cdesc->comp, cdesc->status);
         uct_ud_skb_release(skb, 0);
+        ++count;
     }
+
+    return count;
 }
 
 static void uct_ud_iface_free_async_comps(uct_ud_iface_t *iface)
@@ -840,31 +844,27 @@ static void uct_ud_iface_free_async_comps(uct_ud_iface_t *iface)
     }
 }
 
-ucs_status_t uct_ud_iface_dispatch_pending_rx_do(uct_ud_iface_t *iface)
+unsigned uct_ud_iface_dispatch_pending_rx_do(uct_ud_iface_t *iface)
 {
-    int count;
+    unsigned max_poll = iface->super.config.rx_max_poll;
+    int count         = 0;
     uct_ud_recv_skb_t *skb;
     uct_ud_neth_t *neth;
-    unsigned max_poll = iface->super.config.rx_max_poll;
+    void *hdr;
 
-    count = 0;
     do {
-        skb = ucs_queue_pull_elem_non_empty(&iface->rx.pending_q, uct_ud_recv_skb_t, u.am.queue);
-        neth =  (uct_ud_neth_t *)((char *)uct_ib_iface_recv_desc_hdr(&iface->super,
-                                                                     (uct_ib_iface_recv_desc_t *)skb) +
-                                  UCT_IB_GRH_LEN);
-        uct_ib_iface_invoke_am_desc(&iface->super,
-                                    uct_ud_neth_get_am_id(neth),
-                                    neth + 1,
-                                    skb->u.am.len,
-                                    &skb->super);
-        count++;
-        if (count >= max_poll) {
-            return UCS_ERR_NO_RESOURCE;
-        }
-    } while (!ucs_queue_is_empty(&iface->rx.pending_q));
+        skb  = ucs_queue_pull_elem_non_empty(&iface->rx.pending_q,
+                                             uct_ud_recv_skb_t, u.am.queue);
+        hdr  = uct_ib_iface_recv_desc_hdr(&iface->super,
+                                          (uct_ib_iface_recv_desc_t*)skb);
+        neth = (uct_ud_neth_t*)UCS_PTR_BYTE_OFFSET(hdr, UCT_IB_GRH_LEN);
 
-    return UCS_OK;
+        uct_ib_iface_invoke_am_desc(&iface->super, uct_ud_neth_get_am_id(neth),
+                                    neth + 1, skb->u.am.len, &skb->super);
+        ++count;
+    } while ((count < max_poll) && !ucs_queue_is_empty(&iface->rx.pending_q));
+
+    return count;
 }
 
 static void uct_ud_iface_free_pending_rx(uct_ud_iface_t *iface)
