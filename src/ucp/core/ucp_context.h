@@ -2,6 +2,7 @@
  * Copyright (C) Mellanox Technologies Ltd. 2001-2015.  ALL RIGHTS RESERVED.
  * Copyright (C) ARM Ltd. 2016.  ALL RIGHTS RESERVED.
  * Copyright (C) Advanced Micro Devices, Inc. 2019. ALL RIGHTS RESERVED.
+ * Copyright (C) Huawei Technologies Co., Ltd. 2024. All rights reserved.
  *
  * See file LICENSE for terms.
  */
@@ -114,6 +115,10 @@ typedef struct ucp_context_config {
     unsigned                               keepalive_num_eps;
     /** Enable indirect IDs to object pointers in wire protocols */
     ucs_on_off_auto_value_t                proto_indirect_id;
+    /** Resolution for process pending time for schedule */
+    double                                 min_pending_time;
+    /** Request timeout threshold */
+    double                                 req_timeout_thresh;
 } ucp_context_config_t;
 
 
@@ -268,6 +273,7 @@ typedef struct ucp_context {
     /* All configurations about multithreading support */
     ucp_mt_lock_t                 mt_lock;
 
+    ucp_timeout_warn_callback_t   timeout_warn;
 } ucp_context_t;
 
 

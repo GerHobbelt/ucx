@@ -3,6 +3,7 @@
 * Copyright (C) UT-Battelle, LLC. 2014-2017. ALL RIGHTS RESERVED.
 * Copyright (C) ARM Ltd. 2016-2017.  ALL RIGHTS RESERVED.
 * Copyright (C) Los Alamos National Security, LLC. 2018 ALL RIGHTS RESERVED.
+* Copyright (C) Huawei Technologies Co., Ltd. 2024. All rights reserved.
 * See file LICENSE for terms.
 */
 
@@ -124,7 +125,8 @@ enum ucp_params_field {
     UCP_PARAM_FIELD_TAG_SENDER_MASK   = UCS_BIT(4), /**< tag_sender_mask */
     UCP_PARAM_FIELD_MT_WORKERS_SHARED = UCS_BIT(5), /**< mt_workers_shared */
     UCP_PARAM_FIELD_ESTIMATED_NUM_EPS = UCS_BIT(6), /**< estimated_num_eps */
-    UCP_PARAM_FIELD_ESTIMATED_NUM_PPN = UCS_BIT(7)  /**< estimated_num_ppn */
+    UCP_PARAM_FIELD_ESTIMATED_NUM_PPN = UCS_BIT(7), /**< estimated_num_ppn */
+    UCP_PARAM_FIELD_TIMEOUT_WARN      = UCS_BIT(8)  /**< request timeout warn */
 };
 
 
@@ -599,7 +601,7 @@ typedef enum {
 
     UCP_OP_ATTR_FLAG_NO_IMM_CMPL    = UCS_BIT(16), /**< deny immediate completion */
     UCP_OP_ATTR_FLAG_FAST_CMPL      = UCS_BIT(17), /**< expedite local completion,
-                                                        even if it delays remote 
+                                                        even if it delays remote
                                                         data delivery. Note for
                                                         implementer: this option
                                                         can disable zero copy
@@ -943,6 +945,13 @@ typedef struct ucp_params {
      * will override the number of endpoints set by @e estimated_num_ppn
      */
     size_t                             estimated_num_ppn;
+
+    /**
+     * Pointer to a routine that is responsible for reporting peer info when
+     * request timeout. This is function will be called when some requests blocking
+     * time exceeds that timeout threshold in @ref ucp_worker_progress.
+     */
+    ucp_timeout_warn_callback_t        timeout_warn;
 } ucp_params_t;
 
 
@@ -2662,11 +2671,11 @@ void ucp_rkey_destroy(ucp_rkey_h rkey);
  * @brief Add user defined callback for Active Message.
  *
  * This routine installs a user defined callback to handle incoming Active
- * Messages with a specific id. This callback is called whenever an Active 
- * Message that was sent from the remote peer by @ref ucp_am_send_nb is 
+ * Messages with a specific id. This callback is called whenever an Active
+ * Message that was sent from the remote peer by @ref ucp_am_send_nb is
  * received on this worker.
  *
- * @param [in]  worker      UCP worker on which to set the Active Message 
+ * @param [in]  worker      UCP worker on which to set the Active Message
  *                          handler.
  * @param [in]  id          Active Message id.
  * @param [in]  cb          Active Message callback. NULL to clear.
@@ -3646,7 +3655,7 @@ ucs_status_ptr_t ucp_put_nb(ucp_ep_h ep, const void *buffer, size_t length,
  *                                progress of the operation. The application is
  *                                responsible for releasing the handle using
  *                                @ref ucp_request_free "ucp_request_free()" routine.
- * 
+ *
  * @note Only the datatype ucp_dt_make_contig(1) is supported
  * for @a param->datatype, see @ref ucp_dt_make_contig.
  */
@@ -3772,7 +3781,7 @@ ucs_status_ptr_t ucp_get_nb(ucp_ep_h ep, void *buffer, size_t length,
  *                                progress of the operation. The application is
  *                                responsible for releasing the handle using
  *                                @ref ucp_request_free "ucp_request_free()" routine.
- * 
+ *
  * @note Only the datatype ucp_dt_make_contig(1) is supported
  * for @a param->datatype, see @ref ucp_dt_make_contig.
  */

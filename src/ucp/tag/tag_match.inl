@@ -382,4 +382,10 @@ ucp_tag_frag_hash_init_exp(ucp_tag_frag_match_t *frag_list, ucp_request_t *req)
     ucs_assert(!ucp_tag_frag_match_is_unexp(frag_list));
 }
 
+static UCS_F_ALWAYS_INLINE size_t
+ucp_tag_get_hash_size(ucp_tag_match_t *tm)
+{
+    return ucs_roundup_pow2(UCP_TAG_MATCH_HASH_SIZE);
+}
+
 #endif
