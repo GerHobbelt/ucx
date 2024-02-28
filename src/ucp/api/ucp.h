@@ -948,8 +948,8 @@ typedef struct ucp_params {
 
     /**
      * Pointer to a routine that is responsible for reporting peer info when
-     * request timeout. This is function will be called when some requests blocking
-     * time exceeds that timeout threshold in @ref ucp_worker_progress.
+     * request timeout. This function will be called when some requests blocking
+     * time exceeds the timeout threshold in @ref ucp_worker_progress.
      */
     ucp_timeout_warn_callback_t        timeout_warn;
 } ucp_params_t;
