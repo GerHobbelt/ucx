@@ -1,6 +1,7 @@
 /**
 * Copyright (C) Mellanox Technologies Ltd. 2001-2015.  ALL RIGHTS RESERVED.
 * Copyright (C) ARM Ltd. 2016-2017.  ALL RIGHTS RESERVED.
+* Copyright (C) Huawei Technologies Co., Ltd. 2024. All rights reserved.
 *
 * See file LICENSE for terms.
 */
@@ -14,6 +15,7 @@
 #include "ucp_rkey.h"
 #include "ucp_request.inl"
 
+#include <ucp/tag/tag_match.inl>
 #include <ucp/wireup/address.h>
 #include <ucp/wireup/wireup_cm.h>
 #include <ucp/wireup/wireup_ep.h>
@@ -2391,10 +2393,80 @@ ucs_status_t ucp_worker_query(ucp_worker_h worker,
     return status;
 }
 
+static void ucp_worker_timeout_warn(ucp_worker_h worker)
+{
+    size_t hash_size, bucket;
+    ucp_tag_match_t *tm;
+
+    tm = &worker->tm;
+    hash_size = ucp_tag_get_hash_size(tm);
+    if (ucs_unlikely(!worker->context->timeout_warn)) {
+        return;
+    }
+    /* Traverse the tag matching expected hash array, search for all uncompleted requests. */
+    for (bucket = 0; bucket < hash_size; bucket++) {
+        ucp_request_t *qreq;
+        ucs_queue_iter_t iter;
+        ucp_request_queue_t *req_queue = &tm->expected.hash[bucket];
+        if (req_queue) {
+            ucs_queue_for_each_safe(qreq, iter, &req_queue->queue, recv.queue) {
+                worker->context->timeout_warn(qreq->recv.tag.tag);
+            }
+        }
+    }
+    return;
+}
+
+static void ucp_worker_check_timeout(ucp_worker_h worker, unsigned count_complete)
+{
+    /** start_time: the start tick of the blocking duration.
+     *  last_time: last tick record.
+     *  pending_time: Sum of scheduler pending time.
+     */
+    static ucs_time_t start_time = 0, last_time = 0, pending_time = 0;
+    ucs_time_t current_time, last_time_diff;
+    double min_pending_time = worker->context->config.ext.min_pending_time;
+    double timeout_thresh = worker->context->config.ext.req_timeout_thresh;
+    ucp_tag_match_t *tm;
+    unsigned exp_req_count;
+    int block_flag;
+
+    tm = &worker->tm;
+    /* Uncomplete request count. */
+    exp_req_count = tm->expected.sw_all_count;
+    /* If uncomplete request count is not 0 but no requests completed, some requests blocked. */
+    block_flag = (count_complete == 0 && exp_req_count > 0) ? 1 : 0;
+    current_time = ucs_get_time();
+    if (!block_flag) {
+        /* No requests block, update the start tick and reset pending time. */
+        start_time = current_time;
+        pending_time = 0;
+        goto out;
+    }
+
+    /* Calculate the time diff between the current and the last time,
+     * if time diff exceeds the min_pending_time, determined as scheduler pending. */
+    last_time_diff = current_time - last_time;
+    if (ucs_unlikely(ucs_time_to_sec(last_time_diff) > min_pending_time)) {
+        pending_time += last_time_diff;
+    }
+
+    /* Calculate the time diff between the current and the start time,
+     * if time diff exceeds the timeout_thresh, determined as requests timeout. */
+    if (ucs_unlikely(ucs_time_to_sec(current_time - start_time - pending_time) > timeout_thresh)) {
+        start_time = current_time;
+        pending_time = 0;
+        ucp_worker_timeout_warn(worker);
+    }
+out:
+    last_time = current_time;
+    return;
+}
+
 unsigned ucp_worker_progress(ucp_worker_h worker)
 {
     unsigned count;
-
+    static uint32_t timeout_check_count = 0;
     /* worker->inprogress is used only for assertion check.
      * coverity[assert_side_effect]
      */
@@ -2403,8 +2475,11 @@ unsigned ucp_worker_progress(ucp_worker_h worker)
     /* check that ucp_worker_progress is not called from within ucp_worker_progress */
     ucs_assert(worker->inprogress++ == 0);
     count = uct_worker_progress(worker->uct);
+    if (++timeout_check_count % 1000 == 0) {
+        timeout_check_count = 0;
+        ucp_worker_check_timeout(worker, count);
+    }
     ucs_async_check_miss(&worker->async);
-
     /* coverity[assert_side_effect] */
     ucs_assert(--worker->inprogress == 0);
 

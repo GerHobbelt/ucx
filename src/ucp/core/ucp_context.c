@@ -2,6 +2,7 @@
  * Copyright (C) Mellanox Technologies Ltd. 2001-2014.  ALL RIGHTS RESERVED.
  * Copyright (C) ARM Ltd. 2016.  ALL RIGHTS RESERVED.
  * Copyright (C) NVIDIA Corporation. 2019.  ALL RIGHTS RESERVED.
+ * Copyright (C) Huawei Technologies Co., Ltd. 2024. All rights reserved.
  *
  * See file LICENSE for terms.
  */
@@ -196,6 +197,14 @@ static ucs_config_field_t ucp_config_table[] = {
    "          the DEVICE atomic mode, the DEVICE mode is selected.\n"
    "          Otherwise the CPU mode is selected.",
    ucs_offsetof(ucp_config_t, ctx.atomic_mode), UCS_CONFIG_TYPE_ENUM(ucp_atomic_modes)},
+
+  {"MIN_PENDING_TIME", "3s",
+   "Resolution for process pending time for schedule",
+   ucs_offsetof(ucp_config_t, ctx.min_pending_time), UCS_CONFIG_TYPE_TIME},
+
+   {"REQ_TIMEOUT", "300s",
+   "Request timeout threshold",
+   ucs_offsetof(ucp_config_t, ctx.req_timeout_thresh), UCS_CONFIG_TYPE_TIME},
 
   {"ADDRESS_DEBUG_INFO",
 #if ENABLE_DEBUG_DATA
@@ -1413,6 +1422,12 @@ static void ucp_apply_params(ucp_context_h context, const ucp_params_t *params,
         context->mt_lock.mt_type = mt_type;
     } else {
         context->mt_lock.mt_type = UCP_MT_TYPE_NONE;
+    }
+
+    if (params->field_mask & UCP_PARAM_FIELD_TIMEOUT_WARN) {
+        context->timeout_warn = params->timeout_warn;
+    } else {
+        context->timeout_warn = NULL;
     }
 }
 
