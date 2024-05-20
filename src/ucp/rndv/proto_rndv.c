@@ -369,7 +369,7 @@ ucp_proto_rndv_ctrl_init(const ucp_proto_rndv_ctrl_init_params_t *params,
         parallel_stages[1] = &remote_perf;
         status = ucp_proto_init_parallel_stages(params->super.super.proto_name,
                                                 min_length, range_max_length,
-                                                SIZE_MAX, params->perf_bias,
+                                                params->perf_bias,
                                                 parallel_stages, 2, caps);
         if (status != UCS_OK) {
             goto out_deref_perf_node;
@@ -578,8 +578,9 @@ ucs_status_t ucp_proto_rndv_ack_init(const ucp_proto_init_params_t *init_params,
         parallel_stages[0] = &ack_range;
         parallel_stages[1] = &input_caps->ranges[i];
 
-        status = ucp_proto_init_parallel_stages(name, min_length,
-                                                ack_range.max_length, SIZE_MAX,
+        status = ucp_proto_init_parallel_stages(init_params->proto_name,
+                                                min_length,
+                                                ack_range.max_length,
                                                 0, parallel_stages, 2,
                                                 init_params->caps);
         if (status != UCS_OK) {
