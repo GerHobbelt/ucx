@@ -35,7 +35,6 @@ nobase_dist_libucs_la_HEADERS = \
 	config/parser.h \
 	config/types.h \
 	datastruct/array.h \
-	datastruct/array.inl \
 	datastruct/callbackq.h \
 	datastruct/callbackq_compat.h \
 	datastruct/hlist.h \
@@ -55,6 +54,7 @@ nobase_dist_libucs_la_HEADERS = \
 	memory/rcache.h \
 	memory/memory_type.h \
 	memory/memtype_cache.h \
+	memory/numa.h \
 	profile/profile_defs.h \
 	profile/profile_off.h \
 	profile/profile_on.h \

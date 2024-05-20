@@ -13,7 +13,7 @@
 #include "proto_select.inl"
 
 #include <ucp/core/ucp_ep.inl>
-#include <ucs/datastruct/array.inl>
+#include <ucs/datastruct/array.h>
 #include <ucs/sys/math.h>
 #include <ucs/sys/string.h>
 #include <ucs/debug/log.h>
@@ -24,11 +24,6 @@
  * at point (X + UCP_PROTO_MSGLEN_EPSILON)
  */
 #define UCP_PROTO_MSGLEN_EPSILON   0.5
-
-UCS_ARRAY_IMPL(ucp_proto_perf_envelope, unsigned,
-               ucp_proto_perf_envelope_elem_t, static);
-UCS_ARRAY_IMPL(ucp_proto_perf_list, unsigned, ucs_linear_func_t, )
-
 
 void ucp_proto_common_add_ppln_range(const ucp_proto_init_params_t *init_params,
                                      const ucp_proto_perf_range_t *frag_range,
@@ -176,8 +171,7 @@ ucp_proto_perf_envelope_make(const ucp_proto_perf_list_t *perf_list,
         }
         ucs_log_indent(-1);
 
-        new_elem             = ucs_array_append(ucp_proto_perf_envelope,
-                                                envelope_list,
+        new_elem             = ucs_array_append(envelope_list,
                                                 return UCS_ERR_NO_MEMORY);
         new_elem->index      = best.index;
         new_elem->max_length = midpoint;
@@ -189,16 +183,16 @@ ucp_proto_perf_envelope_make(const ucp_proto_perf_list_t *perf_list,
 }
 
 ucs_status_t
-ucp_proto_init_parallel_stages(const ucp_proto_common_init_params_t *params,
+ucp_proto_init_parallel_stages(const ucp_proto_init_params_t *params,
                                size_t range_start, size_t range_end,
                                size_t frag_size, double bias,
                                const ucp_proto_perf_range_t **stages,
-                               unsigned num_stages)
+                               unsigned num_stages, unsigned flags)
 {
-    ucp_proto_caps_t *caps      = params->super.caps;
+    ucp_proto_caps_t *caps      = params->caps;
     ucs_linear_func_t bias_func = ucs_linear_func_make(0.0, 1.0 - bias);
-    UCS_ARRAY_DEFINE_ONSTACK(stage_list, ucp_proto_perf_list, 16);
-    UCS_ARRAY_DEFINE_ONSTACK(concave, ucp_proto_perf_envelope, 16);
+    UCS_ARRAY_DEFINE_ONSTACK(ucp_proto_perf_envelope_t, concave, 16);
+    UCS_ARRAY_DEFINE_ONSTACK(ucp_proto_perf_list_t, stage_list, 16);
     ucs_linear_func_t perf[UCP_PROTO_PERF_TYPE_LAST];
     ucs_linear_func_t sum_single_perf, sum_cpu_perf;
     const ucp_proto_perf_range_t **stage_elem;
@@ -226,7 +220,7 @@ ucp_proto_init_parallel_stages(const ucp_proto_common_init_params_t *params,
             /* For multi-fragment protocols, we need to apply the fragment
              * size to the performance function linear factor.
              */
-            if (!(params->flags & UCP_PROTO_COMMON_INIT_FLAG_SINGLE_FRAG)) {
+            if (!(flags & UCP_PROTO_COMMON_INIT_FLAG_SINGLE_FRAG)) {
                 perf[perf_type].m += perf[perf_type].c / frag_size;
             }
         }
@@ -238,9 +232,8 @@ ucp_proto_init_parallel_stages(const ucp_proto_common_init_params_t *params,
                                     perf[UCP_PROTO_PERF_TYPE_CPU]);
 
         /* Add all multi perf ranges to envelope array */
-        perf_elem  = ucs_array_append(ucp_proto_perf_list, &stage_list,
-                                      status = UCS_ERR_NO_MEMORY;
-                                      goto out);
+        perf_elem  = ucs_array_append(&stage_list, status = UCS_ERR_NO_MEMORY;
+                                     goto out);
         *perf_elem = perf[UCP_PROTO_PERF_TYPE_MULTI];
 
         ucs_trace("stage[%zu] %s " UCP_PROTO_PERF_FUNC_TYPES_FMT
@@ -252,9 +245,8 @@ ucp_proto_init_parallel_stages(const ucp_proto_common_init_params_t *params,
     }
 
     /* Add CPU time as another parallel stage */
-    perf_elem  = ucs_array_append(ucp_proto_perf_list, &stage_list,
-                                  status = UCS_ERR_NO_MEMORY;
-                                  goto out);
+    perf_elem  = ucs_array_append(&stage_list, status = UCS_ERR_NO_MEMORY;
+                                 goto out);
     *perf_elem = sum_cpu_perf;
 
     /* Multi-fragment is pipelining overheads and network transfer */
@@ -268,10 +260,10 @@ ucp_proto_init_parallel_stages(const ucp_proto_common_init_params_t *params,
         range             = &caps->ranges[caps->num_ranges];
         range->max_length = elem->max_length;
         if (fabs(bias) > UCP_PROTO_PERF_EPSILON) {
-            range->node   = ucp_proto_perf_node_new_data(params->super.proto_name,
+            range->node   = ucp_proto_perf_node_new_data(params->proto_name,
                                                          "bias %f", bias);
         } else {
-            range->node   = ucp_proto_perf_node_new_data(params->super.proto_name,
+            range->node   = ucp_proto_perf_node_new_data(params->proto_name,
                                                          "");
         }
 
@@ -698,8 +690,8 @@ ucp_proto_common_init_caps(const ucp_proto_common_init_params_t *params,
     parallel_stages[2] = &recv_perf;
 
     /* Add ranges representing sending single fragment */
-    status = ucp_proto_init_parallel_stages(params, 0, frag_size, frag_size,
-                                            0.0, parallel_stages, 3);
+    status = ucp_proto_init_parallel_stages(&params->super, 0, frag_size, frag_size,
+                                            0.0, parallel_stages, 3, params->flags);
     if (status != UCS_OK) {
         goto out_deref_recv_perf;
     }
