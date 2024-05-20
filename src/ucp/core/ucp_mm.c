@@ -1001,9 +1001,10 @@ ucs_status_t ucp_mem_type_reg_buffers(ucp_worker_h worker, void *remote_addr,
                                       ucp_md_index_t md_index, ucp_mem_h *memh_p,
                                       uct_rkey_bundle_t *rkey_bundle)
 {
-    ucp_context_h context           = worker->context;
-    const uct_md_attr_v2_t *md_attr = &context->tl_mds[md_index].attr;
-    ucp_mem_h memh                  = NULL; /* To suppress compiler warning */
+    ucp_context_h context            = worker->context;
+    const uct_md_attr_v2_t *md_attr  = &context->tl_mds[md_index].attr;
+    ucp_mem_h memh                   = NULL; /* To suppress compiler warning */
+    uct_md_mkey_pack_params_t params = { .field_mask = 0 };
     uct_component_h cmpt;
     ucp_tl_md_t *tl_md;
     ucs_status_t status;
@@ -1027,7 +1028,9 @@ ucs_status_t ucp_mem_type_reg_buffers(ucp_worker_h worker, void *remote_addr,
     }
 
     rkey_buffer = ucs_alloca(md_attr->rkey_packed_size);
-    status      = uct_md_mkey_pack(tl_md->md, memh->uct[md_index], rkey_buffer);
+    status      = uct_md_mkey_pack_v2(tl_md->md, memh->uct[md_index],
+                                      remote_addr, length, &params,
+                                      rkey_buffer);
     if (status != UCS_OK) {
         ucs_error("failed to pack key from md[%d]: %s",
                   md_index, ucs_status_string(status));
@@ -1443,13 +1446,18 @@ static ucs_rcache_ops_t ucp_mem_rcache_ops = {
 
 static ucs_status_t
 ucp_mem_rcache_create(ucp_context_h context, const char *name,
-                      ucs_rcache_t **rcache_p, ucs_rcache_params_t *rcache_params)
+                      ucs_rcache_t **rcache_p, int events,
+                      ucs_rcache_params_t *rcache_params)
 {
     rcache_params->region_struct_size = ucp_memh_size(context);
-    rcache_params->ucm_events         = UCM_EVENT_VM_UNMAPPED |
-                                        UCM_EVENT_MEM_TYPE_FREE;
     rcache_params->context            = context;
     rcache_params->ops                = &ucp_mem_rcache_ops;
+
+    if (events) {
+        rcache_params->flags         |= UCS_RCACHE_FLAG_SYNC_EVENTS;
+        rcache_params->ucm_events     = UCM_EVENT_VM_UNMAPPED |
+                                        UCM_EVENT_MEM_TYPE_FREE;
+    }
 
     return ucs_rcache_create(rcache_params, name, ucs_stats_get_root(),
                              rcache_p);
@@ -1463,7 +1471,7 @@ ucs_status_t ucp_mem_rcache_init(ucp_context_h context,
 
     ucs_rcache_set_params(&rcache_params, rcache_config);
 
-    status = ucp_mem_rcache_create(context, "ucp_rcache", &context->rcache,
+    status = ucp_mem_rcache_create(context, "ucp_rcache", &context->rcache, 1,
                                    &rcache_params);
     if (status != UCS_OK) {
         goto err;
@@ -1606,7 +1614,7 @@ ucp_memh_import_slow(ucp_context_h context, ucs_rcache_t *existing_rcache,
 
             ucs_rcache_set_default_params(&rcache_params);
 
-            status = ucp_mem_rcache_create(context, rcache_name, &rcache,
+            status = ucp_mem_rcache_create(context, rcache_name, &rcache, 0,
                                            &rcache_params);
             if (status != UCS_OK) {
                 goto out;
@@ -1727,13 +1735,12 @@ ucp_memh_import(ucp_context_h context, const void *export_mkey_buffer,
                  * exists in the RCACHE of imported regions, it means that
                  * an exported memory handle has already been destroyed for a
                  * given address, but an imported memory handle hasn't been
-                 * retrieved from the RCACHE yet. So, it should have reference
-                 * counter == 1, since ucp_mem_unmap() should be invoked for
-                 * unused imported memory handles and then - for corresponding
-                 * exported ones */
-                ucs_assertv(rregion->refcount == 1, "%u", rregion->refcount);
+                 * removed from the RCACHE yet. So, it had refcount == 1 and
+                 * now it should be 2. */
+                ucs_assertv(rregion->refcount == 2, "%u", rregion->refcount);
                 ucs_rcache_region_invalidate(rcache, rregion,
                                              ucs_empty_function, NULL);
+                ucs_rcache_region_put_unsafe(rcache, rregion);
             }
         }
 

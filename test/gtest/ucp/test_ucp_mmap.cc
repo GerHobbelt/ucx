@@ -91,7 +91,7 @@ public:
 
     virtual void init() {
         ucs::skip_on_address_sanitizer();
-        if (disable_proto()) {
+        if (get_variant_value() == VARIANT_PROTO_DISABLE) {
             modify_config("PROTO_ENABLE", "n");
         }
 
@@ -167,7 +167,6 @@ protected:
                     bool import_mem = false);
     void test_rkey_management(ucp_mem_h memh, bool is_dummy,
                               bool expect_rma_offload);
-    bool disable_proto() const;
 
 private:
     void check_distance_precision(double rkey_value, double topo_value,
@@ -297,7 +296,7 @@ void test_ucp_mmap::test_rkey_management(ucp_mem_h memh, bool is_dummy,
     EXPECT_TRUE(ucs_test_all_flags(memh->md_map, rkey->md_map));
 
     /* Test remote key protocols selection */
-    if (m_ucp_config->ctx.proto_enable) {
+    if (is_proto_enabled()) {
         test_rkey_proto(memh);
     } else {
         bool have_rma              = resolve_rma(&receiver(), rkey);
@@ -351,11 +350,6 @@ void test_ucp_mmap::test_rkey_management(ucp_mem_h memh, bool is_dummy,
 
     ucp_rkey_destroy(rkey);
     ucp_rkey_buffer_release(rkey_buffer);
-}
-
-bool test_ucp_mmap::disable_proto() const
-{
-    return get_variant_value() == VARIANT_PROTO_DISABLE;
 }
 
 void test_ucp_mmap::check_distance_precision(double rkey_value,
@@ -412,8 +406,9 @@ void test_ucp_mmap::test_rkey_proto(ucp_mem_h memh)
 
     /* Pack the rkey and validate packed size */
     ssize_t packed_size = ucp_rkey_pack_memh(sender().ucph(), memh->md_map,
-                                             memh, &mem_info, sys_dev_map,
-                                             &sys_distance[0], 0,
+                                             memh, ucp_memh_address(memh),
+                                             ucp_memh_length(memh), &mem_info,
+                                             sys_dev_map, &sys_distance[0], 0,
                                              &rkey_buffer[0]);
     ASSERT_EQ((ssize_t)rkey_size, packed_size);
 
@@ -424,7 +419,7 @@ void test_ucp_mmap::test_rkey_proto(ucp_mem_h memh)
     ASSERT_UCS_OK(status);
 
     /* Check rkey configuration */
-    if (!disable_proto() && m_ucp_config->ctx.proto_enable) {
+    if (is_proto_enabled()) {
         ucp_rkey_config_t *rkey_config = ucp_rkey_config(receiver().worker(),
                                                          rkey);
         ucp_ep_config_t *ep_config     = ucp_ep_config(receiver().ep());
@@ -882,10 +877,7 @@ UCS_TEST_P(test_ucp_mmap, fixed) {
 
     for (int i = 0; i < 1000 / ucs::test_time_multiplier(); ++i) {
         size_t size = (i + 1) * ((i % 2) ? 1000 : 1);
-        void *ptr   = ucs::mmap_fixed_address(size);
-        if (ptr == nullptr) {
-            UCS_TEST_ABORT("mmap failed to allocate memory region");
-        }
+        ucs::mmap_fixed_address ptr(size);
 
         ucp_mem_h memh;
         ucp_mem_map_params_t params;
@@ -893,13 +885,13 @@ UCS_TEST_P(test_ucp_mmap, fixed) {
         params.field_mask = UCP_MEM_MAP_PARAM_FIELD_ADDRESS |
                             UCP_MEM_MAP_PARAM_FIELD_LENGTH |
                             UCP_MEM_MAP_PARAM_FIELD_FLAGS;
-        params.address    = ptr;
+        params.address    = *ptr;
         params.length     = size;
         params.flags      = UCP_MEM_MAP_FIXED | UCP_MEM_MAP_ALLOCATE;
 
         status = ucp_mem_map(sender().ucph(), &params, &memh);
         ASSERT_UCS_OK(status);
-        EXPECT_EQ(ucp_memh_address(memh), ptr);
+        EXPECT_EQ(ucp_memh_address(memh), *ptr);
         EXPECT_GE(ucp_memh_length(memh), size);
 
         is_dummy = (size == 0);
