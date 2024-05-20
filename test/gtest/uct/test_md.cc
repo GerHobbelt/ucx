@@ -101,7 +101,7 @@ void test_md::test_reg_mem(unsigned access_mask,
     params.flags       = UCT_MD_MEM_DEREG_FLAG_INVALIDATE;
     params.comp        = &comp().comp;
 
-    if (!is_supported_reg_mem_flags(access_mask)) {
+    if (!check_invalidate_support(access_mask)) {
         params.field_mask = UCT_MD_MEM_DEREG_FIELD_COMPLETION |
                             UCT_MD_MEM_DEREG_FIELD_FLAGS |
                             UCT_MD_MEM_DEREG_FIELD_MEMH;
@@ -173,7 +173,7 @@ test_md::test_md()
     /* coverity[uninit_member] */
 }
 
-bool test_md::is_supported_reg_mem_flags(unsigned reg_flags) const
+bool test_md::check_invalidate_support(unsigned reg_flags) const
 {
     return (reg_flags & md_flags_remote_rma) ?
            check_caps(UCT_MD_FLAG_INVALIDATE_RMA) :
@@ -1139,7 +1139,7 @@ class test_md_non_blocking : public test_md
 protected:
     void init() override {
         /* ODPv1 IB feature can work only for certain DEVX configuration */
-        modify_config("MLX5_DEVX_OBJECTS", "dct,dcsrq", IGNORE_IF_NOT_EXIST);
+        modify_config("IB_MLX5_DEVX_OBJECTS", "dct,dcsrq", IGNORE_IF_NOT_EXIST);
         test_md::init();
     }
 };
