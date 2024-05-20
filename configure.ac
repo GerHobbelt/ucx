@@ -10,7 +10,7 @@
 AC_PREREQ([2.63])
 
 define([ucx_ver_major], 1)  # Major version. Usually does not change.
-define([ucx_ver_minor], 17) # Minor version. Increased for each release.
+define([ucx_ver_minor], 18) # Minor version. Increased for each release.
 define([ucx_ver_patch], 0)  # Patch version. Increased for a bugfix release.
 define([ucx_ver_extra], )   # Extra version string. Empty for a general release.
 
@@ -394,7 +394,7 @@ AC_OUTPUT
 
 
 #
-# Print build condiguration
+# Print build configuration
 #
 AC_MSG_NOTICE([=========================================================])
 AS_IF([test "x$with_docs_only" = xyes],
