@@ -44,8 +44,9 @@ static const char *uct_dct_affinity_policy_names[] = {
 
 /* DC specific parameters, expecting DC_ prefix */
 ucs_config_field_t uct_dc_mlx5_iface_config_sub_table[] = {
-    {"RC_", "IB_TX_QUEUE_LEN=128;FC_ENABLE=y;", NULL,
-     ucs_offsetof(uct_dc_mlx5_iface_config_t, super),
+    {"RC_", "IB_TX_QUEUE_LEN=128;FC_ENABLE=y;"
+            UCT_IB_SEND_OVERHEAD_DEFAULT(UCT_RC_MLX5_IFACE_OVERHEAD),
+     NULL, ucs_offsetof(uct_dc_mlx5_iface_config_t, super),
      UCS_CONFIG_TYPE_TABLE(uct_rc_iface_common_config_table)},
 
     /* Since long timeout will block SRQ in case of network failure on single
@@ -910,19 +911,16 @@ uct_dc_mlx5_iface_is_reachable_v2(const uct_iface_h tl_iface,
 {
     uct_dc_mlx5_iface_t *iface = ucs_derived_of(tl_iface, uct_dc_mlx5_iface_t);
     const uct_dc_mlx5_iface_addr_t *addr;
-    int same_tm, same_version, same_max_rd_atomic;
+    int same_tm, same_version;
 
     addr = (const uct_dc_mlx5_iface_addr_t*)UCS_PARAM_VALUE(
             UCT_IFACE_IS_REACHABLE_FIELD, params, iface_addr, IFACE_ADDR, NULL);
     if (addr != NULL) {
-        same_tm            = (UCT_DC_MLX5_IFACE_ADDR_TM_ENABLED(addr) ==
-                              UCT_RC_MLX5_TM_ENABLED(&iface->super));
-        same_version       = ((addr->flags & UCT_DC_MLX5_IFACE_ADDR_DC_VERS) ==
-                             iface->version_flag);
-        same_max_rd_atomic = (iface->super.super.config.max_rd_atomic == 16) ==
-                              !!(addr->flags &
-                                       UCT_DC_MLX5_IFACE_ADDR_MAX_RD_ATOMIC_16);
-        if (!same_version || !same_tm || !same_max_rd_atomic) {
+        same_tm      = (UCT_DC_MLX5_IFACE_ADDR_TM_ENABLED(addr) ==
+                        UCT_RC_MLX5_TM_ENABLED(&iface->super));
+        same_version = ((addr->flags & UCT_DC_MLX5_IFACE_ADDR_DC_VERS) ==
+                        iface->version_flag);
+        if (!same_version || !same_tm) {
             return 0;
         }
     }

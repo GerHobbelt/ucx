@@ -1,6 +1,7 @@
 /**
 * Copyright (c) NVIDIA CORPORATION & AFFILIATES, 2001-2019. ALL RIGHTS RESERVED.
 * Copyright (C) ARM Ltd. 2017.  ALL RIGHTS RESERVED.
+* Copyright (C) Advanced Micro Devices, Inc. 2024. ALL RIGHTS RESERVED.
 *
 * See file LICENSE for terms.
 */
@@ -32,8 +33,11 @@
 #include <uct/ib/ud/base/ud_inl.h>
 
 
+#define UCT_UD_MLX5_IFACE_OVERHEAD 80e-9
+
+
 static ucs_config_field_t uct_ud_mlx5_iface_config_table[] = {
-  {"UD_", "", NULL,
+  {"UD_", UCT_IB_SEND_OVERHEAD_DEFAULT(UCT_UD_MLX5_IFACE_OVERHEAD), NULL,
    ucs_offsetof(uct_ud_mlx5_iface_config_t, super),
    UCS_CONFIG_TYPE_TABLE(uct_ud_iface_config_table)},
 
@@ -200,7 +204,7 @@ uct_ud_mlx5_iface_post_recv(uct_ud_mlx5_iface_t *iface)
 
     for (count = 0; count < batch; count ++) {
         next_pi = (pi + 1) &  iface->rx.wq.mask;
-        ucs_prefetch(rx_wqes + next_pi);
+        ucs_read_prefetch(rx_wqes + next_pi);
         UCT_TL_IFACE_GET_RX_DESC(&iface->super.super.super, &iface->super.rx.mp,
                                  desc, break);
         rx_wqes[pi].lkey = htonl(desc->lkey);
@@ -489,7 +493,7 @@ uct_ud_mlx5_iface_poll_rx(uct_ud_mlx5_iface_t *iface, int is_async)
 
     ci            = iface->rx.wq.cq_wqe_counter & iface->rx.wq.mask;
     packet        = (void *)be64toh(iface->rx.wq.wqes[ci].addr);
-    ucs_prefetch(UCS_PTR_BYTE_OFFSET(packet, UCT_IB_GRH_LEN));
+    ucs_read_prefetch(UCS_PTR_BYTE_OFFSET(packet, UCT_IB_GRH_LEN));
     rx_hdr_offset = iface->super.super.config.rx_hdr_offset;
     desc          = UCS_PTR_BYTE_OFFSET(packet, -rx_hdr_offset);
 
@@ -627,7 +631,7 @@ uct_ud_mlx5_iface_query(uct_iface_h tl_iface, uct_iface_attr_t *iface_attr)
         return status;
     }
 
-    iface_attr->overhead = 80e-9; /* Software overhead */
+    iface_attr->overhead = UCT_UD_MLX5_IFACE_OVERHEAD; /* Software overhead */
 
     return UCS_OK;
 }
