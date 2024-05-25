@@ -3,6 +3,7 @@
 * Copyright (C) UT-Battelle, LLC. 2014-2015. ALL RIGHTS RESERVED.
 * Copyright (C) IBM 2015. ALL RIGHTS RESERVED.
 * Copyright (C) Los Alamos National Security, LLC. 2018. ALL RIGHTS RESERVED.
+* Copyright (C) Huawei Technologies Co., Ltd. 2024. All rights reserved.
 *
 * See file LICENSE for terms.
 */
@@ -292,6 +293,17 @@ typedef void (*ucp_request_init_callback_t)(void *request);
  */
 typedef void (*ucp_request_cleanup_callback_t)(void *request);
 
+
+/**
+ * @ingroup UCP_CONTEXT
+ * @brief Request timeout warn callback.
+ *
+ * This callback routine is responsible for reporting peer info
+ * when request timeout.
+ *
+ * @param [in]  tag      tag of timeout request.
+ */
+typedef void (*ucp_timeout_warn_callback_t)(uint64_t tag);
 
 /**
  * @ingroup UCP_COMM
