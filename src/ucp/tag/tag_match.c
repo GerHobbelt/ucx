@@ -16,7 +16,7 @@ ucs_status_t ucp_tag_match_init(ucp_tag_match_t *tm)
 {
     size_t hash_size, bucket;
 
-    hash_size = ucs_roundup_pow2(UCP_TAG_MATCH_HASH_SIZE);
+    hash_size = ucp_tag_get_hash_size(tm);
 
     tm->expected.sn           = 0;
     tm->expected.sw_all_count = 0;
