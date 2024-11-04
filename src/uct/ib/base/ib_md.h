@@ -94,7 +94,7 @@ typedef struct uct_ib_md_ext_config {
                                                        invalidated memory keys
                                                        that are kept idle before
                                                        reuse*/
-    unsigned                 reg_retry_cnt; /**< Memory registration retry count */
+    unsigned long            reg_retry_cnt; /**< Memory registration retry count */
     unsigned                 smkey_block_size; /**< Mkey indexes in a symmetric block */
 } uct_ib_md_ext_config_t;
 
@@ -142,6 +142,7 @@ typedef struct uct_ib_md {
     int                      relaxed_order;
     int                      fork_init;
     uint64_t                 reg_mem_types;
+    uint64_t                 gva_mem_types;
     uint64_t                 reg_nonblock_mem_types;
     uint64_t                 cap_flags;
     char                     *name;

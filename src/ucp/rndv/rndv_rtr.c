@@ -51,10 +51,6 @@ static ucs_status_t ucp_proto_rndv_rtr_common_send(ucp_request_t *req)
                                                       rpriv->super.lane,
                                                       rpriv->pack_cb, req,
                                                       max_rtr_size, NULL, 0);
-    if (status == UCS_OK) {
-        UCP_WORKER_STAT_RNDV(worker, RTR, +1);
-    }
-
     return status;
 }
 
@@ -125,12 +121,13 @@ static size_t ucp_proto_rndv_rtr_pack_with_rkey(void *dest, void *arg)
 
 static ucs_status_t ucp_proto_rndv_rtr_progress(uct_pending_req_t *self)
 {
-    ucp_request_t *req = ucs_container_of(self, ucp_request_t, send.uct);
+    ucp_request_t *req   = ucs_container_of(self, ucp_request_t, send.uct);
+    ucp_worker_t *worker = req->send.ep->worker;
     const ucp_proto_rndv_rtr_priv_t *rpriv = req->send.proto_config->priv;
     ucs_status_t status;
 
     if (!(req->flags & UCP_REQUEST_FLAG_PROTO_INITIALIZED)) {
-        status = ucp_datatype_iter_mem_reg(req->send.ep->worker->context,
+        status = ucp_datatype_iter_mem_reg(worker->context,
                                            &req->send.state.dt_iter,
                                            rpriv->super.md_map,
                                            UCT_MD_MEM_ACCESS_REMOTE_PUT |
@@ -145,7 +142,12 @@ static ucs_status_t ucp_proto_rndv_rtr_progress(uct_pending_req_t *self)
         req->flags |= UCP_REQUEST_FLAG_PROTO_INITIALIZED;
     }
 
-    return ucp_proto_rndv_rtr_common_send(req);
+    status = ucp_proto_rndv_rtr_common_send(req);
+    if (status == UCS_OK) {
+        UCP_WORKER_STAT_RNDV(worker, RTR, +1);
+    }
+
+    return status;
 }
 
 static void ucp_proto_rndv_rtr_probe(const ucp_proto_init_params_t *init_params)
@@ -301,11 +303,9 @@ ucp_proto_rndv_rtr_mtype_abort(ucp_request_t *req, ucs_status_t status)
 
 static ucs_status_t ucp_proto_rndv_rtr_mtype_reset(ucp_request_t *req)
 {
-    ucs_mpool_put_inline(req->send.rndv.mdesc);
-    if (ucp_proto_rndv_request_is_ppln_frag(req)) {
-        req->status = UCS_ERR_CANCELED;
-        ucp_proto_rndv_ppln_recv_frag_clean(req);
-        return UCS_ERR_CANCELED;
+    if (req->flags & UCP_REQUEST_FLAG_PROTO_INITIALIZED) {
+        ucs_mpool_put_inline(req->send.rndv.mdesc);
+        req->send.rndv.mdesc = NULL;
     }
 
     return ucp_proto_request_zcopy_id_reset(req);
@@ -353,7 +353,12 @@ static ucs_status_t ucp_proto_rndv_rtr_mtype_progress(uct_pending_req_t *self)
         req->flags |= UCP_REQUEST_FLAG_PROTO_INITIALIZED;
     }
 
-    return ucp_proto_rndv_rtr_common_send(req);
+    status = ucp_proto_rndv_rtr_common_send(req);
+    if (status == UCS_OK) {
+        UCP_WORKER_STAT_RNDV(req->send.ep->worker, RTR_MTYPE, +1);
+    }
+
+    return status;
 }
 
 static void
