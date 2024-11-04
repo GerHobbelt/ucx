@@ -1408,7 +1408,10 @@ ucs_status_t ucp_worker_iface_open(ucp_worker_h worker, ucp_rsc_index_t tl_id,
     uct_config_release(iface_config);
 
     if (status != UCS_OK) {
-       goto err_free_iface;
+        ucs_error("uct_iface_open(" UCT_TL_RESOURCE_DESC_FMT ") failed: %s",
+                  UCT_TL_RESOURCE_DESC_ARG(&resource->tl_rsc),
+                  ucs_status_string(status));
+        goto err_free_iface;
     }
 
     VALGRIND_MAKE_MEM_UNDEFINED(&wiface->attr, sizeof(wiface->attr));
@@ -3417,8 +3420,7 @@ static int ucp_worker_do_ep_keepalive(ucp_worker_h worker, ucs_time_t now)
     ucs_trace("ep %p: do keepalive on lane[%d]=%p ep->flags=0x%x", ep, lane,
               uct_ep, ep->flags);
 
-    if (ucp_ep_is_am_keepalive(ep, rsc_index,
-                               ucp_ep_config(ep)->p2p_lanes & UCS_BIT(lane))) {
+    if (ucp_ep_is_am_keepalive(ep, rsc_index, ucp_ep_is_lane_p2p(ep, lane))) {
         status = ucp_ep_do_uct_ep_am_keepalive(ep, uct_ep, rsc_index);
     } else {
         status = uct_ep_check(uct_ep, 0, NULL);
@@ -3720,7 +3722,7 @@ ucp_wiface_process_for_each_lane(ucp_worker_h worker,
 
     ucs_for_each_bit(lane, lane_map) {
         ucs_assertv(lane < UCP_MAX_LANES,
-                    "lane=%" PRIu8 ", lane_map=0x%" PRIx16, lane, lane_map);
+                    "lane=%" PRIu8 ", lane_map=0x%" PRIx64, lane, lane_map);
         rsc_index = ep_config->key.lanes[lane].rsc_index;
         wiface    = ucp_worker_iface(worker, rsc_index);
         wiface_process(wiface);

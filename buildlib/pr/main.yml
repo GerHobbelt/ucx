@@ -358,12 +358,14 @@ stages:
     jobs:
       - template: ../jucx/jucx-test.yml
         parameters:
-          name: new
-          demands: ucx_new -equals yes
+          arch: amd64
+          name: gpu
+          demands: ucx_gpu
+
       - template: ../jucx/jucx-test.yml
         parameters:
-          name: gpu
-          demands: ucx_gpu -equals yes
+          arch: aarch64
+          demands: ucx-arm64
 
   - stage: go
     dependsOn: [Static_check]
@@ -458,6 +460,12 @@ stages:
         test_perf: 0
         proto_enable: no
         container: ubuntu2204_ib
+        asan_check: yes
+    - template: tests.yml
+      parameters:
+        name: BlueField
+        demands: ucx_bf -equals yes
+        test_perf: 0
         asan_check: yes
 
 
