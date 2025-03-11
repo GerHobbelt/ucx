@@ -252,9 +252,10 @@ static ucs_status_t uct_dc_mlx5_iface_query(uct_iface_h tl_iface, uct_iface_attr
                                    UCT_IFACE_FLAG_PUT_ZCOPY);
     }
 
-    /* Error handling is not supported with random dci policy
+    /* Error handling is not supported with shared dci policies
      * TODO: Fix */
-    if (uct_dc_mlx5_iface_is_policy_shared(iface)) {
+    if (uct_dc_mlx5_iface_is_policy_shared(iface) ||
+        uct_dc_mlx5_iface_is_hybrid(iface)) {
         iface_attr->cap.flags &= ~(UCT_IFACE_FLAG_ERRHANDLE_PEER_FAILURE |
                                    UCT_IFACE_FLAG_ERRHANDLE_ZCOPY_BUF    |
                                    UCT_IFACE_FLAG_ERRHANDLE_REMOTE_MEM);
@@ -1179,12 +1180,12 @@ static void uct_dc_mlx5_iface_cleanup_fc_ep(uct_dc_mlx5_iface_t *iface)
     ucs_arbiter_group_cleanup(&fc_ep->arb_group);
     uct_rc_fc_cleanup(&fc_ep->fc);
 
-    if ((fc_ep->dci != UCT_DC_MLX5_EP_NO_DCI) &&
+    if ((fc_ep->dci == UCT_DC_MLX5_EP_NO_DCI) ||
         !uct_dc_mlx5_is_dci_valid(fc_dci)) {
         goto out;
     }
 
-    if (uct_dc_mlx5_iface_is_policy_shared(iface)) {
+    if (uct_dc_mlx5_is_dci_shared(iface, fc_ep->dci)) {
         txqp = &fc_dci->txqp;
         ucs_queue_for_each_safe(op, iter, &txqp->outstanding, queue) {
             if (op->handler == uct_dc_mlx5_ep_fc_pure_grant_send_completion) {
@@ -1613,6 +1614,10 @@ static UCS_CLASS_INIT_FUNC(uct_dc_mlx5_iface_t, uct_md_h tl_md, uct_worker_h wor
         init_attr.flags  |= UCT_IB_TM_SUPPORTED;
     }
 
+    if (md->dp_ordering_cap.dc == UCT_IB_MLX5_DP_ORDERING_OOO_ALL) {
+        init_attr.flags |= UCT_IB_DDP_SUPPORTED;
+    }
+
     status = uct_dc_mlx5_calc_sq_length(md, tx_queue_len, &sq_length);
     if (status != UCS_OK) {
         return status;
@@ -1626,9 +1631,9 @@ static UCS_CLASS_INIT_FUNC(uct_dc_mlx5_iface_t, uct_md_h tl_md, uct_worker_h wor
                               tl_md, worker, params, &config->super,
                               &config->rc_mlx5_common, &init_attr);
 
-    status = uct_rc_mlx5_dp_ordering_ooo_init(
-            &self->super, UCT_IB_MLX5_MD_FLAG_DP_ORDERING_OOO_RW_DC,
-            &config->rc_mlx5_common, "dc");
+    status = uct_rc_mlx5_dp_ordering_ooo_init(&self->super,
+                                              md->dp_ordering_cap.dc,
+                                              &config->rc_mlx5_common, "dc");
     if (status != UCS_OK) {
         return status;
     }
