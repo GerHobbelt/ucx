@@ -284,9 +284,8 @@ err_mem_release:
 
 typedef CUresult (*uct_cuda_cuCtxSetFlags_t)(unsigned);
 
-static void uct_cuda_copy_sync_memops(CUdeviceptr dptr, int is_vmm)
+static ucs_status_t uct_cuda_copy_set_ctx_sync_memops(int log_level)
 {
-    unsigned sync_memops_value = 1;
 #if HAVE_CUDA_FABRIC
     static uct_cuda_cuCtxSetFlags_t cuda_cuCtxSetFlags_func =
         (uct_cuda_cuCtxSetFlags_t)ucs_empty_function;
@@ -306,12 +305,22 @@ static void uct_cuda_copy_sync_memops(CUdeviceptr dptr, int is_vmm)
 
     if (cuda_cuCtxSetFlags_func != NULL) {
         /* Synchronize future DMA operations for all memory types */
-        UCT_CUDADRV_FUNC_LOG_WARN(cuda_cuCtxSetFlags_func(CU_CTX_SYNC_MEMOPS));
-        return;
+        UCT_CUDADRV_FUNC(cuda_cuCtxSetFlags_func(CU_CTX_SYNC_MEMOPS),
+                         log_level);
+        return UCS_OK;
     }
 #endif
 
-    if (is_vmm) {
+    return UCS_ERR_UNSUPPORTED;
+}
+
+static void uct_cuda_copy_sync_memops(CUdeviceptr dptr, int is_vmm)
+{
+    unsigned sync_memops_value = 1;
+
+    if (uct_cuda_copy_set_ctx_sync_memops(UCS_LOG_LEVEL_WARN) == UCS_OK) {
+        return;
+    } else if (is_vmm) {
         ucs_warn("cannot set sync_memops on CUDA VMM without cuCtxSetFlags() "
                  "(address=0x%llx)",
                  dptr);
@@ -324,9 +333,8 @@ static void uct_cuda_copy_sync_memops(CUdeviceptr dptr, int is_vmm)
                                   CU_POINTER_ATTRIBUTE_SYNC_MEMOPS, dptr));
 }
 
-static ucs_status_t
-uct_cuda_copy_push_ctx(CUdevice device, int retain_inactive,
-                       ucs_log_level_t log_level)
+ucs_status_t uct_cuda_copy_push_ctx(CUdevice device, int retain_inactive,
+                                    ucs_log_level_t log_level)
 {
     ucs_status_t status;
     CUcontext primary_ctx;
@@ -608,7 +616,8 @@ static ucs_status_t uct_cuda_copy_mem_free(uct_md_h md, uct_mem_h memh)
     if (alloc_handle->is_vmm) {
         status = uct_cuda_copy_mem_release_fabric(alloc_handle);
     } else {
-        status = UCT_CUDADRV_FUNC_LOG_ERR(cuMemFree(alloc_handle->ptr));
+        UCT_CUDADRV_FUNC(cuMemFree(alloc_handle->ptr), UCS_LOG_LEVEL_DIAG);
+        status = UCS_OK;
     }
 
     ucs_free(alloc_handle);
@@ -763,21 +772,10 @@ uct_cuda_copy_md_query_attributes(uct_cuda_copy_md_t *md, const void *address,
             return UCS_ERR_INVALID_ADDR;
         }
 
-        if (is_managed ||
-            ((cuda_mem_ctx == NULL) && md->config.cuda_async_managed)) {
-            /* is_managed: cuMemGetAddress range does not support managed memory
-             * so use provided address and length as base address and alloc
-             * length respectively
-             *
-             * cuda_async_managed: currently virtual/stream-ordered CUDA
-             * allocations are typed as `UCS_MEMORY_TYPE_CUDA_MANAGED`. This may
-             * be changed using UCX_CUDA_COPY_ASYNC_MEM_TYPE env var.
-             * Ideally checking for
-             * `CU_POINTER_ATTRIBUTE_IS_LEGACY_CUDA_IPC_CAPABLE` would be better
-             * here, but due to a bug in the driver `cudaMalloc` also returns false
-             * in that case. Therefore, checking whether the allocation was not
-             * allocated in a context should also allows us to identify
-             * virtual/stream-ordered CUDA allocations. */
+        if (is_managed) {
+            /* cuMemGetAddress range does not support managed memory so use
+             * provided address and length as base address and alloc length
+             * respectively */
             mem_info->type = UCS_MEMORY_TYPE_CUDA_MANAGED;
 
             cu_err = cuMemRangeGetAttribute(
@@ -802,6 +800,16 @@ uct_cuda_copy_md_query_attributes(uct_cuda_copy_md_t *md, const void *address,
             }
 
             goto out_default_range;
+        } else if ((cuda_mem_ctx == NULL) && md->config.cuda_async_managed) {
+            /* Currently virtual/stream-ordered CUDA allocations are typed as
+             * `UCS_MEMORY_TYPE_CUDA_MANAGED`. This may be changed using
+             * UCX_CUDA_COPY_ASYNC_MEM_TYPE env var. Ideally checking for
+             * `CU_POINTER_ATTRIBUTE_IS_LEGACY_CUDA_IPC_CAPABLE` would be better
+             * here, but due to a bug in the driver `cudaMalloc` also returns
+             * false in that case. Therefore, checking whether the allocation
+             * was not allocated in a context should also allows us to
+             * identify virtual/stream-ordered CUDA allocations. */
+            mem_info->type = UCS_MEMORY_TYPE_CUDA_MANAGED;
         } else {
             mem_info->type = UCS_MEMORY_TYPE_CUDA;
         }
@@ -874,7 +882,7 @@ static int uct_cuda_copy_md_get_dmabuf_fd(uintptr_t address, size_t length)
     return UCT_DMABUF_FD_INVALID;
 }
 
-static ucs_status_t
+ucs_status_t
 uct_cuda_copy_md_mem_query(uct_md_h tl_md, const void *address, size_t length,
                            uct_md_mem_attr_t *mem_attr)
 {
@@ -1029,6 +1037,13 @@ uct_cuda_copy_md_open(uct_component_t *component, const char *md_name,
     }
 
     *md_p = (uct_md_h)md;
+
+    /*
+     * Setting sync memops flag for the first time during memory detection can
+     * cause a deadlock if other CUDA operations are performed in parallel.
+     * We avoid that issue by preemptively setting it during MD open.
+     */
+    uct_cuda_copy_set_ctx_sync_memops(UCS_LOG_LEVEL_DEBUG);
 
     return UCS_OK;
 
