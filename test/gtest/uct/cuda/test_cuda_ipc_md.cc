@@ -20,8 +20,8 @@ protected:
     static uct_cuda_ipc_rkey_t
     unpack_common(uct_md_h md, int64_t uuid, CUdeviceptr ptr, size_t size)
     {
+        uct_cuda_ipc_rkey_t rkey = {};
         uct_mem_h memh;
-        uct_cuda_ipc_rkey_t rkey;
         EXPECT_UCS_OK(md->ops->mem_reg(md, (void *)ptr, size, NULL, &memh));
         EXPECT_UCS_OK(md->ops->mkey_pack(md, memh, (void *)ptr, size, NULL,
                                          &rkey));
@@ -236,6 +236,13 @@ UCS_TEST_P(test_cuda_ipc_md, mkey_pack_mempool)
 #else
     UCS_TEST_SKIP_R("built without fabric support");
 #endif
+}
+
+UCS_TEST_P(test_cuda_ipc_md, mnnvl_disabled)
+{
+    /* Currently MNNVL is always disabled in CI */
+    uct_cuda_ipc_md_t *cuda_ipc_md = ucs_derived_of(md(), uct_cuda_ipc_md_t);
+    EXPECT_FALSE(cuda_ipc_md->enable_mnnvl);
 }
 
 _UCT_MD_INSTANTIATE_TEST_CASE(test_cuda_ipc_md, cuda_ipc);
