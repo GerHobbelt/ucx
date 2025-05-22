@@ -1206,8 +1206,8 @@ ucs_status_t ucp_ep_create(ucp_worker_h worker, const ucp_ep_params_t *params,
     unsigned flags = UCP_PARAM_VALUE(EP, params, flags, FLAGS, 0);
     ucs_status_t status;
 
-    ep->ep_hostname = (char*)malloc(sizeof(char) * 128);
-    if (!ep->ep_hostname) {
+    ep->peer_hostname = (char*)malloc(sizeof(char) * 128);
+    if (!ep->peer_hostname) {
         return UCS_ERR_NO_MEMORY;
     }
     
@@ -1234,7 +1234,7 @@ ucs_status_t ucp_ep_create(ucp_worker_h worker, const ucp_ep_params_t *params,
         }
 #endif
 
-        if (params->field_mask & UCP_EP_PARAMS_FLAGS_PEER_HOST_ADDR) {
+        if (params->field_mask & UCP_EP_PARAM_FIELD_PEER_HOST_ADDR) {
             ep->vpid = params->vpid;
             memcpy(ep->peer_hostname, params->peer_hostname, strlen(params->peer_hostname)+1);
         }
