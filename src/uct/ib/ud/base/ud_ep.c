@@ -287,7 +287,7 @@ static unsigned uct_ud_ep_deferred_timeout_handler(void *arg)
                       ep->gid.global.interface_id);
         } else {
             ucs_fatal("UD endpoint %p to "UCT_UD_EP_PEER_NAME_FMT": "
-                      "unhandled timeout error with local dev name:%s remote dev lid:[%I64u]",
+                      "unhandled timeout error with local dev name:%s remote dev lid:[%hu]",
                       ep, UCT_UD_EP_PEER_NAME_ARG(ep),
                       uct_ib_device_name(dev),
                       ep->lid);
@@ -572,6 +572,7 @@ static ucs_status_t uct_ud_ep_connect_to_iface(uct_ud_ep_t *ep,
 
     uct_ib_address_unpack(ib_addr, &unpack_params);
     ep->gid = unpack_params.gid;
+    ep->lid = unpack_params.lid;
 
     ucs_debug(UCT_IB_IFACE_FMT" lid %d qpn 0x%x epid %u ep %p connected to "
               "IFACE %s qpn 0x%x", UCT_IB_IFACE_ARG(&iface->super),
