@@ -750,6 +750,7 @@ uct_ud_ep_connect_to_ep_v2(uct_ep_h tl_ep,
     uct_ib_address_pack_params_t unpack_params;
     uct_ib_address_unpack(ib_addr, &unpack_params);
     ep->gid = unpack_params.gid;
+    ep->lid = unpack_params.lid;
 
     ucs_assert_always(ep->dest_ep_id == UCT_UD_EP_NULL_ID);
     ucs_trace_func("");
