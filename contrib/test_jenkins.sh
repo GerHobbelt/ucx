@@ -247,7 +247,6 @@ run_hello() {
 		unset UCX_RC_TIMEOUT
 		unset UCX_RC_RETRY_COUNT
 	fi
-	unset UCX_PROTO_ENABLE
 }
 
 #
@@ -1072,7 +1071,8 @@ run_gtest_armclang() {
 				CC=armclang \
 				CXX=armclang++ \
 				CFLAGS="${ARMCLANG_CFLAGS}" \
-				--without-go
+				--without-go \
+				--without-valgrind
 
 			run_gtest "armclang"
 		else
@@ -1195,7 +1195,7 @@ run_tests() {
 	run_configure_tests
 
 	# build for devel tests and gtest
-	build devel --enable-gtest
+	build devel --enable-gtest --without-valgrind
 
 	# devel mode tests
 	do_distributed_task 0 4 test_unused_env_var
@@ -1226,16 +1226,6 @@ run_tests() {
 
 	# nt_buffer_transfer tests
 	do_distributed_task 0 4 run_nt_buffer_transfer_tests
-}
-
-run_test_proto_disable() {
-	# build for devel tests and gtest
-	build devel --enable-gtest
-
-	export UCX_PROTO_ENABLE=n
-
-	# all are running gtest
-	run_gtest "default"
 }
 
 run_asan_check() {
@@ -1276,9 +1266,7 @@ then
     check_machine
     set_ucx_common_test_env
 
-    if [[ "$PROTO_ENABLE" == "no" ]]; then
-        run_test_proto_disable
-    elif [[ "$ASAN_CHECK" == "yes" ]]; then
+    if [[ "$ASAN_CHECK" == "yes" ]]; then
         run_asan_check
     elif [[ "$VALGRIND_CHECK" == "yes" ]]; then
         run_valgrind_check

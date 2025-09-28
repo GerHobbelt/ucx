@@ -10,6 +10,14 @@ AS_IF([test "x$cuda_checked" != "xyes"],
     AC_ARG_WITH([cuda],
                 [AS_HELP_STRING([--with-cuda=(DIR)], [Enable the use of CUDA (default is guess).])],
                 [], [with_cuda=guess])
+    AC_ARG_WITH([nvcc],
+                AS_HELP_STRING([--with-nvcc], [Enable NVCC compiler support (default is guess)]),
+                [],
+                [with_nvcc="guess"])
+    AC_ARG_WITH([nvcc-gencode],
+                AS_HELP_STRING([--with-nvcc-gencode=(OPTS)], [Build for specific GPU architectures]),
+                [],
+                [with_nvcc_gencode="-gencode=arch=compute_80,code=sm_80"])
 
     AS_IF([test "x$with_cuda" = "xno"],
         [
@@ -29,6 +37,7 @@ AS_IF([test "x$cuda_checked" != "xyes"],
          CUDART_STATIC_LIBS=""
          NVML_LIBS=""
          CUDA_BIN_PATH=""
+         CUDA_LIB_DIR=""
 
          AS_IF([test ! -z "$with_cuda" -a "x$with_cuda" != "xyes" -a "x$with_cuda" != "xguess"],
                [ucx_check_cuda_dir="$with_cuda"
@@ -36,7 +45,8 @@ AS_IF([test "x$cuda_checked" != "xyes"],
                 ucx_check_cuda_libdir="$with_cuda/lib$libsuff"
                 CUDA_CPPFLAGS="-I$with_cuda/include"
                 CUDA_LDFLAGS="-L$ucx_check_cuda_libdir -L$ucx_check_cuda_libdir/stubs"
-                CUDA_BIN_PATH="$with_cuda/bin"])
+                CUDA_BIN_PATH="$with_cuda/bin"
+                CUDA_LIB_DIR="$ucx_check_cuda_libdir"])
 
          CPPFLAGS="$CPPFLAGS $CUDA_CPPFLAGS"
          LDFLAGS="$LDFLAGS $CUDA_LDFLAGS"
@@ -97,7 +107,25 @@ AS_IF([test "x$cuda_checked" != "xyes"],
 
          # Check NVCC exists and able to compile
          nvcc_happy="no"
-         AC_PATH_PROGS(NVCC, nvcc, "", $CUDA_BIN_PATH:$PATH)
+         AC_ARG_VAR([NVCC], [nvcc compiler path])
+         AC_ARG_VAR([NVCCFLAGS], [nvcc compiler flags])
+         AS_IF([test "x$with_nvcc" != "xno"],
+               [AC_PATH_PROGS(NVCC, nvcc, "", $CUDA_BIN_PATH:$PATH)
+                AC_LANG_PUSH([C])
+                AC_LANG_CONFTEST([AC_LANG_SOURCE([[
+                  #if __cplusplus < 201103L
+                  #error missing C++11
+                  #endif
+                ]])])
+                mv conftest.c conftest.cu
+                AC_MSG_CHECKING([$NVCC needs explicit C++11 option])
+                AS_IF([$NVCC -c conftest.cu 2>&AS_MESSAGE_LOG_FD],
+                      [AC_MSG_RESULT([no])],
+                      [AC_MSG_RESULT([yes])
+                       BASE_NVCCFLAGS="$BASE_NVCCFLAGS -std=c++11"])
+                rm conftest.cu
+                AC_LANG_POP])
+
          AS_IF([test "x$NVCC" != "x"],
                [AC_LANG_PUSH([C])
                 AC_LANG_CONFTEST([AC_LANG_SOURCE([[#include <cuda_runtime.h>]])])
@@ -105,6 +133,7 @@ AS_IF([test "x$cuda_checked" != "xyes"],
                 AC_MSG_CHECKING([$NVCC can compile])
                 AS_IF([$NVCC -c conftest.cu 2>&AS_MESSAGE_LOG_FD],
                   [AC_MSG_RESULT([yes])
+                   BASE_NVCCFLAGS="$BASE_NVCCFLAGS $with_nvcc_gencode -g -lineinfo"
                    nvcc_happy="yes"],
                   [AC_MSG_RESULT([no])
                    cat conftest.cu >&AS_MESSAGE_LOG_FD])
@@ -115,6 +144,10 @@ AS_IF([test "x$cuda_checked" != "xyes"],
          CPPFLAGS="$save_CPPFLAGS"
          LDFLAGS="$save_LDFLAGS"
          LIBS="$save_LIBS"
+
+         AS_IF([test "x$with_nvcc" = "xyes" -a "x$nvcc_happy" = "xno"],
+               [AC_MSG_ERROR([nvcc compiler is not functional])],
+               [])
 
          AS_IF([test "x$cuda_happy" = "xyes"],
                [AC_SUBST([CUDA_CPPFLAGS], ["$CUDA_CPPFLAGS"])

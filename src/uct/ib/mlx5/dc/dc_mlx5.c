@@ -1608,6 +1608,7 @@ static UCS_CLASS_INIT_FUNC(uct_dc_mlx5_iface_t, uct_md_h tl_md, uct_worker_h wor
     init_attr.fc_req_size   = sizeof(uct_dc_fc_request_t);
     init_attr.max_rd_atomic = md->max_rd_atomic_dc;
     init_attr.tx_moderation = 0; /* disable tx moderation for dcs */
+    init_attr.dev_name      = params->mode.device.dev_name;
 
     if (md->flags & UCT_IB_MLX5_MD_FLAG_DC_TM) {
         init_attr.flags  |= UCT_IB_TM_SUPPORTED;
@@ -1831,17 +1832,18 @@ void uct_dc_mlx5_iface_reset_dci(uct_dc_mlx5_iface_t *iface,
 
     status = uct_ib_mlx5_modify_qp_state(&iface->super.super.super,
                                          &txwq->super, IBV_QPS_RESET);
+    if (status != UCS_OK) {
+        ucs_fatal("iface %p failed to reset dci[%d] qpn 0x%x: %s",
+                  iface, dci_index, txwq->super.qp_num,
+                  ucs_status_string(status));
+    }
 
     uct_rc_mlx5_iface_commom_clean(&iface->super.cq[UCT_IB_DIR_TX], NULL,
                                    txwq->super.qp_num);
 
     /* Resume posting from to the beginning of the QP */
     uct_ib_mlx5_txwq_reset(txwq);
-    if (status != UCS_OK) {
-        ucs_fatal("iface %p failed to reset dci[%d] qpn 0x%x: %s",
-                  iface, dci_index, txwq->super.qp_num,
-                  ucs_status_string(status));
-    }
+    uct_ib_mlx5_init_wq_buf(txwq);
 
     status = uct_dc_mlx5_iface_dci_connect(iface, dci);
     if (status != UCS_OK) {
