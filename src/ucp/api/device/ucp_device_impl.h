@@ -9,9 +9,46 @@
 
 #include "ucp_device_types.h"
 
+#include <ucp/api/ucp_def.h>
+#include <uct/api/device/uct_device_impl.h>
 #include <ucs/sys/compiler_def.h>
 #include <ucs/type/status.h>
 #include <stdint.h>
+
+/**
+ * @ingroup UCP_DEVICE
+ * @brief GPU request descriptor of a given batch
+ *
+ * This request tracks a batch of memory operations in progress. It can be used
+ * with @ref ucp_device_progress_req to detect request completion.
+ */
+typedef struct ucp_device_request {
+    uct_device_completion_t comp;
+    uct_device_ep_h         device_ep;
+} ucp_device_request_t;
+
+
+/**
+ * @ingroup UCP_DEVICE
+ * @brief Cooperation level when calling device functions.
+ *
+ * Must map exactly @ref uct_device_level_t.
+ */
+typedef enum {
+    UCP_DEVICE_LEVEL_THREAD = 0,
+    UCP_DEVICE_LEVEL_WARP   = 1,
+    UCP_DEVICE_LEVEL_BLOCK  = 2,
+    UCP_DEVICE_LEVEL_GRID   = 3
+} ucp_device_level_t;
+
+
+/**
+ * @ingroup UCP_DEVICE
+ * @brief Specify modifier flags for device sending functions.
+ */
+typedef enum {
+    UCP_DEVICE_FLAG_NODELAY = UCS_BIT(0) /**< Complete before return. */
+} ucp_device_flags_t;
 
 
 /**
@@ -28,8 +65,9 @@
  *
  * This routine can be called repeatedly with the same handle and different
  * addresses and length. The flags parameter can be used to modify the behavior
- * of the routine.
+ * of the routine with bit from @ref ucp_device_flags_t.
  *
+ * @tparam      level           Level of cooperation of the transfer.
  * @param [in]  mem_list        Memory descriptor list handle to use.
  * @param [in]  mem_list_index  Index in descriptor list pointing to the memory
  * @param [in]  address         Local virtual address to send data from.
@@ -41,13 +79,31 @@
  *
  * @return Error code as defined by @ref ucs_status_t
  */
-UCS_F_DEVICE ucs_status_t
-ucp_device_put_single(ucp_device_mem_list_handle_h mem_list,
-                      unsigned mem_list_index,
-                      const void *address, uint64_t remote_address,
-                      size_t length, uint64_t flags, ucp_device_request_t *req)
+template<ucp_device_level_t level = UCP_DEVICE_LEVEL_THREAD>
+UCS_F_DEVICE ucs_status_t ucp_device_put_single(
+        ucp_device_mem_list_handle_h handle, unsigned mem_list_index,
+        const void *address, uint64_t remote_address, size_t length,
+        uint64_t flags, ucp_device_request_t *req)
 {
-    return UCS_ERR_NOT_IMPLEMENTED;
+    unsigned lane = 0;
+    const uct_device_mem_element_t *uct_elem;
+    size_t elem_offset;
+
+    if ((handle->version != UCP_DEVICE_MEM_LIST_VERSION_V1) ||
+        (handle->num_uct_eps == 0) ||
+        (mem_list_index >= handle->mem_list_length) || (flags != 0)) {
+        return UCS_ERR_INVALID_PARAM;
+    }
+
+    elem_offset     = mem_list_index * handle->uct_mem_element_size[lane];
+    uct_elem        = (uct_device_mem_element_t *)
+        UCS_PTR_BYTE_OFFSET(handle, sizeof(*handle) + elem_offset);
+
+    req->device_ep  = handle->uct_device_eps[lane];
+    req->comp.count = 1; /* TODO: Handle multiple device posts with same req? */
+    return uct_device_ep_put_single<(uct_device_level_t)level>(
+            req->device_ep, uct_elem, address, remote_address, length,
+            UCT_DEVICE_FLAG_NODELAY, &req->comp);
 }
 
 
@@ -67,6 +123,7 @@ ucp_device_put_single(ucp_device_mem_list_handle_h mem_list,
  * address. The flags parameter can be used to modify the behavior of the
  * routine.
  *
+ * @tparam      level           Level of cooperation of the transfer.
  * @param [in]  mem_list        Memory descriptor list handle to use.
  * @param [in]  mem_list_index  Index in descriptor list pointing to the memory
  *                              remote key to use for the increment operation.
@@ -78,6 +135,7 @@ ucp_device_put_single(ucp_device_mem_list_handle_h mem_list,
  *
  * @return Error code as defined by @ref ucs_status_t
  */
+template <ucp_device_level_t level = UCP_DEVICE_LEVEL_THREAD>
 UCS_F_DEVICE ucs_status_t
 ucp_device_counter_inc(ucp_device_mem_list_handle_h mem_list,
                        unsigned mem_list_index, uint64_t inc_value,
@@ -112,8 +170,10 @@ ucp_device_counter_inc(ucp_device_mem_list_handle_h mem_list,
  *
  * This routine can be called repeatedly with the same handle and different
  * @a addresses, @a lengths and counter related parameters. The @a flags
- * parameter can be used to modify the behavior of the routine.
+ * parameter can be used to modify the behavior of the routine with bit from
+ * @ref ucp_device_flags_t.
  *
+ * @tparam      level                  Level of cooperation of the transfer.
  * @param [in]  mem_list               Memory descriptor list handle to use.
  * @param [in]  addresses              Array of local addresses to send from.
  * @param [in]  remote_addresses       Array of remote addresses to send to.
@@ -125,6 +185,7 @@ ucp_device_counter_inc(ucp_device_mem_list_handle_h mem_list,
  *
  * @return Error code as defined by @ref ucs_status_t
  */
+template <ucp_device_level_t level = UCP_DEVICE_LEVEL_THREAD>
 UCS_F_DEVICE ucs_status_t
 ucp_device_put_multi(ucp_device_mem_list_handle_h mem_list,
                      void *const *addresses, const uint64_t *remote_addresses,
@@ -162,8 +223,10 @@ ucp_device_put_multi(ucp_device_mem_list_handle_h mem_list,
  *
  * This routine can be called repeatedly with the same handle and different
  * mem_list_indices, addresses, lengths and increment related parameters. The
- * flags parameter can be used to modify the behavior of the routine.
+ * flags parameter can be used to modify the behavior of the routine with bit
+ * from @ref ucp_device_flags_t.
  *
+ * @tparam      level                  Level of cooperation of the transfer.
  * @param [in]  mem_list               Memory descriptor list handle to use.
  * @param [in]  mem_list_indices       Array of indices, to use in descriptor
  *                                     list of entries from handle.
@@ -179,6 +242,7 @@ ucp_device_put_multi(ucp_device_mem_list_handle_h mem_list,
  *
  * @return Error code as defined by @ref ucs_status_t
  */
+template <ucp_device_level_t level = UCP_DEVICE_LEVEL_THREAD>
 UCS_F_DEVICE ucs_status_t
 ucp_device_put_multi_partial(ucp_device_mem_list_handle_h mem_list,
                              const unsigned *mem_list_indices,
@@ -197,12 +261,48 @@ ucp_device_put_multi_partial(ucp_device_mem_list_handle_h mem_list,
 
 /**
  * @ingroup UCP_DEVICE
+ * @brief Read a counter value from memory.
+ *
+ * This function can be used on the receiving side to detect completion of a
+ * data transfer.
+ *
+ * The counter memory area must be initialized with the host function
+ * @ref ucp_device_counter_init.
+ *
+ * @tparam      level       Level of cooperation of the transfer.
+ * @param [in]  counter_ptr Counter memory area.
+ *
+ * @return value of the counter memory area, UINT64_MAX in case of error.
+ */
+template <ucp_device_level_t level = UCP_DEVICE_LEVEL_THREAD>
+UCS_F_DEVICE uint64_t
+ucp_device_counter_read(const void *counter_ptr)
+{
+    return 0;
+}
+
+
+/**
+ * @ingroup UCP_DEVICE
+ * @brief Initialize a device request.
+ *
+ * @param [out] req  Device request to initialize.
+ */
+UCS_F_DEVICE void ucp_device_request_init(ucp_device_request_t *req)
+{
+    uct_device_completion_init(&req->comp);
+}
+
+
+/**
+ * @ingroup UCP_DEVICE
  * @brief Progress a device request containing a batch of operations.
  *
  * This device progress function checks and progresses a request representing a
  * batch of one or many operations in progress.
  *
- * @param [in]  req  Request containing operations in progress.
+ * @tparam      level  Level of cooperation of the transfer.
+ * @param [in]  req    Request containing operations in progress.
  *
  * @return UCS_OK           - The request has completed, no more operations are
  *                            in progress.
@@ -210,10 +310,18 @@ ucp_device_put_multi_partial(ucp_device_mem_list_handle_h mem_list,
  *                            have not completed.
  * @return Error code as defined by @ref ucs_status_t
  */
+template <ucp_device_level_t level = UCP_DEVICE_LEVEL_THREAD>
 UCS_F_DEVICE ucs_status_t
 ucp_device_progress_req(ucp_device_request_t *req)
 {
-    return UCS_ERR_NOT_IMPLEMENTED;
+    ucs_status_t status;
+
+    if (ucs_likely(req->comp.count == 0)) {
+        return req->comp.status;
+    }
+
+    status = uct_device_ep_progress<(uct_device_level_t)level>(req->device_ep);
+    return (status != UCS_OK ? status : UCS_INPROGRESS);
 }
 
 #endif /* UCP_DEVICE_IMPL_H */

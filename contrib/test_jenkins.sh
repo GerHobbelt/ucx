@@ -260,7 +260,7 @@ run_ucp_hello() {
 
 	mem_types_list="host "
 
-	if [ "X$have_cuda" == "Xyes" ]
+	if [ "X$have_cuda" != "Xno" ]
 	then
 		mem_types_list+="cuda cuda-managed "
 	fi
@@ -297,7 +297,7 @@ run_ucp_hello() {
 run_uct_hello() {
 	mem_types_list="host "
 
-	if [ "X$have_cuda" == "Xyes" ] && [ -f "/sys/kernel/mm/memory_peers/nv_mem/version" ]
+	if [ "X$have_cuda" != "Xno" ] && [ -f "/sys/kernel/mm/memory_peers/nv_mem/version" ]
 	then
 		mem_types_list+="cuda-managed "
 		if [ -f "/sys/kernel/mm/memory_peers/nv_mem/version" ]
@@ -333,7 +333,7 @@ run_client_server() {
 	msg_size_list="1 16 256 4096 65534"
 	api_list="am tag stream"
 
-	if [ "X$have_cuda" == "Xyes" ]
+	if [ "X$have_cuda" != "Xno" ]
 	then
 		mem_types_list+=" cuda cuda-managed "
 	fi
@@ -374,7 +374,7 @@ run_io_demo() {
 	server_nonrdma_addr=$(get_non_rdma_ip_addr)
 	mem_types_list="host "
 
-	if [ "X$have_cuda" == "Xyes" ]
+	if [ "X$have_cuda" != "Xno" ]
 	then
 		mem_types_list+="cuda cuda-managed "
 	fi
@@ -449,7 +449,7 @@ run_ucx_perftest() {
 			opt_transports="-x posix"
 			tls="shm"
 			dev="all"
-		elif [[ " ${ip_ifaces[*]} " == *" ${ucx_dev} "* ]]; then
+		elif printf '%s\n' "$ip_ifaces" | grep -qxF "$ucx_dev"; then
 			opt_transports="-x tcp"
 			tls="tcp"
 			dev=$ucx_dev
@@ -496,12 +496,12 @@ run_ucx_perftest() {
 
 	# run cuda tests if cuda module was loaded and GPU is found, and only in
 	# client/server mode, to reduce testing time
-	if [ "X$have_cuda" == "Xyes" ] && [ $with_mpi -ne 1 ]
+	if [ "X$have_cuda" != "Xno" ] && [ $with_mpi -ne 1 ]
 	then
 		gdr_options="n "
-		if (lsmod | grep -q "nv_peer_mem")
+		if (lsmod | grep -q 'nv.*_peer.*mem')
 		then
-			echo "GPUDirectRDMA module (nv_peer_mem) is present.."
+			echo "GPUDirectRDMA module (nv_peer_mem/nvidia_peermem) is present"
 			gdr_options+="y "
 		fi
 
@@ -634,6 +634,36 @@ run_ucx_perftest_with_daemon() {
 }
 
 #
+# Run UCX performance cuda device test
+#
+run_ucx_perftest_cuda_device() {
+	if [ "X$have_cuda" == "Xno" ]; then
+		echo "==== CUDA not available, skipping CUDA device tests ===="
+		return 0
+	fi
+
+	if ! has_gpunetio_devel; then
+		echo "==== DOCA not available, skipping CUDA device tests ===="
+		return 0
+	fi
+
+	if [ "$(get_num_gpus)" -eq 0 ]; then
+		echo "==== No NVIDIA GPUs found, skipping CUDA device tests ===="
+		return 0
+	fi
+
+    echo "==== Running ucx_perftest with cuda kernel ===="
+	ucx_inst_ptest=$ucx_inst/share/ucx/perftest
+	ucx_perftest="$ucx_inst/bin/ucx_perftest"
+	ucp_test_args="-b $ucx_inst_ptest/test_types_ucp_device_cuda"
+
+	# TODO: Run on all GPUs
+	ucp_client_args="-a cuda $(hostname)"
+
+	run_client_server_app "$ucx_perftest" "$ucp_test_args" "$ucp_client_args" 0 0
+}
+
+#
 # Test malloc hooks with mpi
 #
 test_malloc_hooks_mpi() {
@@ -688,13 +718,13 @@ run_mpi_tests() {
 					-mca btl tcp,self \
 					-mca btl_tcp_if_include lo \
 					-mca orte_allowed_exit_without_sync 1 \
-					-mca coll ^hcoll,ml"
+					-mca coll ^hcoll,ml,ucc"
 
 			run_ucx_perftest 1
 
 			test_malloc_hooks_mpi
 
-			if [ "X$have_cuda" == "Xyes" ] && [ -x ./test/mpi/test_mpi_cuda ]
+			if [ "X$have_cuda" != "Xno" ] && [ -x ./test/mpi/test_mpi_cuda ]
 			then
 				echo "==== Running MPI CUDA tests ===="
 				${MPIRUN_COMMON} -np 2 ./test/mpi/test_mpi_cuda
@@ -897,7 +927,7 @@ test_malloc_hook() {
 
 test_no_cuda_context() {
 	echo "==== Running no CUDA context test ===="
-	if [ "X$have_cuda" == "Xyes" ] && [ -x ./test/apps/test_no_cuda_ctx ]
+	if [ "X$have_cuda" != "Xno" ] && [ -x ./test/apps/test_no_cuda_ctx ]
 	then
 		./test/apps/test_no_cuda_ctx
 	fi
@@ -1208,6 +1238,7 @@ run_tests() {
 	do_distributed_task 3 4 run_ucp_client_server
 	do_distributed_task 0 4 test_no_cuda_context
 	do_distributed_task 1 4 run_ucx_perftest_with_daemon
+	do_distributed_task 1 4 run_ucx_perftest_cuda_device
 
 	# long devel tests
 	do_distributed_task 0 4 run_ucp_hello
