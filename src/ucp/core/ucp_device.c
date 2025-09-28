@@ -14,6 +14,7 @@
 #include <ucp/api/device/ucp_host.h>
 #include <ucp/api/device/ucp_device_types.h>
 #include <ucs/type/param.h>
+#include <ucp/wireup/wireup_ep.h>
 
 #include "ucp_worker.inl"
 #include "ucp_ep.inl"
@@ -237,7 +238,7 @@ static ucs_status_t ucp_device_mem_list_create_handle(
 {
     size_t handle_size = 0;
     size_t uct_elem_size[UCP_DEVICE_MEM_LIST_MAX_EPS];
-    uint8_t i, j, num_uct_eps;
+    unsigned i, j, num_uct_eps;
     uct_iface_attr_v2_t attr;
     ucs_status_t status;
     ucp_worker_iface_t *wiface;
@@ -253,6 +254,11 @@ static ucs_status_t ucp_device_mem_list_create_handle(
     for (i = 0;
          (i < UCP_DEVICE_MEM_LIST_MAX_EPS) && (lanes[i] != UCP_NULL_LANE);
          i++) {
+        if (ucp_wireup_ep_test(ucp_ep_get_lane(ep, lanes[i]))) {
+            /* TODO support proxy mem_element_pack() on wireup_ep */
+            return UCS_ERR_NOT_CONNECTED;
+        }
+
         /* Query per transport UCT memory list element size */
         wiface          = ucp_worker_iface(ep->worker,
                                            ucp_ep_get_rsc_index(ep, lanes[i]));
@@ -271,7 +277,8 @@ static ucs_status_t ucp_device_mem_list_create_handle(
     }
 
     if (i == 0) {
-        ucs_error("failed to select lane");
+        ucs_error("failed to select lane for local device %s",
+                  ucs_topo_sys_device_get_name(local_sys_dev));
         return UCS_ERR_NO_RESOURCE;
     }
 
@@ -431,4 +438,51 @@ void ucp_device_mem_list_release(ucp_device_mem_list_handle_h handle)
 {
     uct_allocated_memory_t mem = ucp_device_mem_handle_hash_remove(handle);
     uct_mem_free(&mem);
+}
+
+static ucs_memory_type_t
+ucp_device_counter_mem_type(ucp_context_h context, const void *counter_ptr,
+                            const ucp_device_counter_params_t *params)
+{
+    ucs_memory_info_t mem_info;
+
+    if (params->field_mask & UCP_DEVICE_COUNTER_PARAMS_FIELD_MEMH) {
+        return params->memh->mem_type;
+    }
+
+    if (params->field_mask & UCP_DEVICE_COUNTER_PARAMS_FIELD_MEM_TYPE) {
+        return params->mem_type;
+    }
+
+    ucp_memory_detect_internal(context, counter_ptr, sizeof(uint64_t),
+                               &mem_info);
+    return mem_info.type;
+}
+
+ucs_status_t ucp_device_counter_init(ucp_worker_h worker,
+                                     const ucp_device_counter_params_t *params,
+                                     void *counter_ptr)
+{
+    uint64_t counter_value = 0;
+    ucs_memory_type_t mem_type;
+
+    mem_type = ucp_device_counter_mem_type(worker->context, counter_ptr,
+                                           params);
+    ucp_mem_type_unpack(worker, counter_ptr, &counter_value,
+                        sizeof(counter_value), mem_type);
+    return UCS_OK;
+}
+
+uint64_t ucp_device_counter_read(ucp_worker_h worker,
+                                 const ucp_device_counter_params_t *params,
+                                 void *counter_ptr)
+{
+    ucs_memory_type_t mem_type;
+    uint64_t counter_value;
+
+    mem_type = ucp_device_counter_mem_type(worker->context, counter_ptr,
+                                           params);
+    ucp_mem_type_pack(worker, &counter_value, counter_ptr,
+                      sizeof(counter_value), mem_type);
+    return counter_value;
 }

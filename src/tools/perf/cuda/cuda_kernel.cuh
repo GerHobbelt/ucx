@@ -8,8 +8,9 @@
 #define CUDA_KERNEL_CUH_
 
 #include "cuda_common.h"
-#include <tools/perf/lib/libperf_int.h>
 
+#include <tools/perf/lib/libperf_int.h>
+#include <ucs/sys/device_code.h>
 #include <cuda_runtime.h>
 
 
@@ -20,6 +21,7 @@ struct ucx_perf_cuda_context {
     ucx_perf_counter_t   max_iters;
     ucx_perf_cuda_time_t report_interval_ns;
     ucx_perf_counter_t   completed_iters;
+    ucs_status_t         status;
 };
 
 UCS_F_DEVICE ucx_perf_cuda_time_t ucx_perf_cuda_get_time_ns()
@@ -47,110 +49,151 @@ ucx_perf_cuda_update_report(ucx_perf_cuda_context &ctx,
     }
 }
 
-template <typename Base>
-class ucx_perf_cuda_test_runner: public Base {
-public:
-    using psn_t = uint64_t;
-    using Base::m_perf;
+static UCS_F_ALWAYS_INLINE uint64_t *
+ucx_perf_cuda_get_sn(const void *address, size_t length)
+{
+    return (uint64_t*)UCS_PTR_BYTE_OFFSET(address, length);
+}
 
-    ucx_perf_cuda_test_runner(ucx_perf_context_t &perf) : Base(perf)
-    {
-        ucs_status_t status = init_ctx();
-        if (status != UCS_OK) {
-            ucs_fatal("failed to allocate device memory context: %s",
-                      ucs_status_string(status));
+UCS_F_DEVICE void ucx_perf_cuda_wait_sn(const uint64_t *sn, uint64_t value)
+{
+    if (threadIdx.x == 0) {
+        while (ucs_device_atomic64_read(sn) < value);
+    }
+    __syncthreads();
+}
+
+/* Simple bitset */
+#define UCX_BIT_MASK(bit)       (1 << ((bit) & (CHAR_BIT - 1)))
+#define UCX_BIT_SET(set, bit)   (set[(bit)/CHAR_BIT] |= UCX_BIT_MASK(bit))
+#define UCX_BIT_RESET(set, bit) (set[(bit)/CHAR_BIT] &= ~UCX_BIT_MASK(bit))
+#define UCX_BIT_GET(set, bit)   (set[(bit)/CHAR_BIT] &  UCX_BIT_MASK(bit))
+#define UCX_BITSET_SIZE(bits)   ((bits + CHAR_BIT - 1) / CHAR_BIT)
+
+UCS_F_DEVICE size_t ucx_bitset_popcount(const uint8_t *set, size_t bits) {
+    size_t count = 0;
+    for (size_t i = 0; i < bits; i++) {
+        if (UCX_BIT_GET(set, i)) {
+            count++;
         }
+    }
+    return count;
+}
+
+UCS_F_DEVICE size_t
+ucx_bitset_ffns(const uint8_t *set, size_t bits, size_t from)
+{
+    for (size_t i = from; i < bits; i++) {
+        if (!UCX_BIT_GET(set, i)) {
+            return i;
+        }
+    }
+    return bits;
+}
+
+#define UCX_KERNEL_CMD(level, cmd, blocks, threads, shared_size, func, ...) \
+    do { \
+        switch (cmd) { \
+        case UCX_PERF_CMD_PUT_SINGLE: \
+            func<level, UCX_PERF_CMD_PUT_SINGLE><<<blocks, threads, shared_size>>>(__VA_ARGS__); \
+            break; \
+        case UCX_PERF_CMD_PUT_MULTI: \
+            func<level, UCX_PERF_CMD_PUT_MULTI><<<blocks, threads, shared_size>>>(__VA_ARGS__); \
+            break; \
+        case UCX_PERF_CMD_PUT_PARTIAL: \
+            func<level, UCX_PERF_CMD_PUT_PARTIAL><<<blocks, threads, shared_size>>>(__VA_ARGS__); \
+            break; \
+        default: \
+            ucs_error("Unsupported cmd: %d", cmd); \
+            break; \
+        } \
+    } while (0)
+
+#define UCX_KERNEL_DISPATCH(perf, func, ...) \
+    do { \
+        ucs_device_level_t _level = perf.params.device_level; \
+        ucx_perf_cmd_t _cmd       = perf.params.command; \
+        unsigned _blocks          = perf.params.device_block_count; \
+        unsigned _threads         = perf.params.device_thread_count; \
+        size_t _shared_size       = _threads * perf.params.max_outstanding * \
+                                    sizeof(ucp_device_request_t); \
+        switch (_level) { \
+        case UCS_DEVICE_LEVEL_THREAD: \
+            UCX_KERNEL_CMD(UCS_DEVICE_LEVEL_THREAD, _cmd, _blocks, _threads,\
+                           _shared_size, func, __VA_ARGS__); \
+            break; \
+        case UCS_DEVICE_LEVEL_WARP: \
+            UCX_KERNEL_CMD(UCS_DEVICE_LEVEL_WARP, _cmd, _blocks, _threads,\
+                           _shared_size, func, __VA_ARGS__); \
+            break; \
+        case UCS_DEVICE_LEVEL_BLOCK: \
+            UCX_KERNEL_CMD(UCS_DEVICE_LEVEL_BLOCK, _cmd, _blocks, _threads,\
+                           _shared_size, func, __VA_ARGS__); \
+            break; \
+        case UCS_DEVICE_LEVEL_GRID: \
+            UCX_KERNEL_CMD(UCS_DEVICE_LEVEL_GRID, _cmd, _blocks, _threads,\
+                           _shared_size, func, __VA_ARGS__); \
+            break; \
+        default: \
+            ucs_error("Unsupported level: %d", _level); \
+            break; \
+        } \
+    } while (0)
+
+class ucx_perf_cuda_test_runner {
+public:
+    ucx_perf_cuda_test_runner(ucx_perf_context_t &perf) : m_perf(perf)
+    {
+        init_ctx();
 
         m_cpu_ctx->max_outstanding    = perf.params.max_outstanding;
-        m_cpu_ctx->max_iters          = perf.params.max_iter;
-        m_cpu_ctx->report_interval_ns = perf.params.report_interval *
-                                        UCS_NSEC_PER_SEC;
+        m_cpu_ctx->max_iters          = perf.max_iter;
         m_cpu_ctx->completed_iters    = 0;
-
-        m_poll_interval               = perf.params.report_interval / 10000;
+        m_cpu_ctx->report_interval_ns = (perf.report_interval == ULONG_MAX) ?
+                                        ULONG_MAX :
+                                        ucs_time_to_nsec(perf.report_interval) / 100;
+        m_cpu_ctx->status             = UCS_ERR_NOT_IMPLEMENTED;
     }
 
     ~ucx_perf_cuda_test_runner()
     {
-        destroy_ctx();
+        CUDA_CALL_WARN(cudaFreeHost, m_cpu_ctx);
     }
 
-    ucx_perf_cuda_context &gpu_ctx() const { return *m_gpu_ctx; }
-
-    UCS_F_ALWAYS_INLINE psn_t get_sn(const psn_t *gpu_ptr, const psn_t *cpu_ptr)
+    void wait_for_kernel()
     {
-        if (cpu_ptr != nullptr) {
-            return *cpu_ptr;
-        }
-
-        unsigned my_index          = rte_call(&m_perf, group_index);
-        ucs_memory_type_t mem_type = my_index ? m_perf.params.send_mem_type :
-                                                m_perf.params.recv_mem_type;
-        auto allocator             = my_index ? m_perf.send_allocator :
-                                                m_perf.recv_allocator;
-        return Base::get_sn(gpu_ptr, mem_type, allocator);
-    }
-
-    psn_t wait_sn_geq(const psn_t *gpu_ptr, const psn_t *cpu_ptr, psn_t value)
-    {
-        psn_t sn = get_sn(gpu_ptr, cpu_ptr);
-        if (sn >= value) {
-            return sn;
-        }
-
-        // TODO: use cuStreamWaitValue64 if available
-        usleep(m_poll_interval);
-        return get_sn(gpu_ptr, cpu_ptr);
-    }
-
-    void wait_for_kernel(size_t length)
-    {
-        psn_t last_completed = 0;
-        while (last_completed < m_perf.params.max_iter) {
-            psn_t completed = wait_sn_geq(&m_gpu_ctx->completed_iters,
-                                          &m_cpu_ctx->completed_iters,
-                                          last_completed);
-            psn_t delta     = completed - last_completed;
+        size_t msg_length                 = ucx_perf_get_message_size(&m_perf.params);
+        ucx_perf_counter_t last_completed = 0;
+        ucx_perf_counter_t completed      = m_cpu_ctx->completed_iters;
+        unsigned thread_count             = m_perf.params.device_thread_count;
+        while (true) {
+            ucx_perf_counter_t delta = completed - last_completed;
             if (delta > 0) {
                 // TODO: calculate latency percentile on kernel
-                ucx_perf_update_multi(&m_perf, delta, delta * length);
+                ucx_perf_update(&m_perf, delta, delta * thread_count, msg_length);
+            } else if (completed >= m_perf.max_iter) {
+                break;
             }
             last_completed = completed;
+            completed      = m_cpu_ctx->completed_iters;
+            // TODO: use cuStreamWaitValue64 if available
+            usleep(100);
         }
     }
 
-    void wait_for_sn(size_t length)
-    {
-        const psn_t *ptr = Base::sn_ptr(m_perf.recv_buffer, length);
-        while (wait_sn_geq(ptr, nullptr, m_perf.params.max_iter)
-               < m_perf.params.max_iter);
-    }
-
-private:
-    ucs_status_t init_ctx()
-    {
-        CUDA_CALL(UCS_ERR_NO_MEMORY, cudaHostAlloc, &m_cpu_ctx,
-                  sizeof(ucx_perf_cuda_context), cudaHostAllocMapped);
-
-        cudaError_t err = cudaHostGetDevicePointer(&m_gpu_ctx, m_cpu_ctx, 0);
-        if (err != cudaSuccess) {
-            ucs_error("cudaHostGetDevicePointer() failed: %s",
-                      cudaGetErrorString(err));
-            cudaFreeHost(m_cpu_ctx);
-            return UCS_ERR_IO_ERROR;
-        }
-
-        return UCS_OK;
-    }
-
-    void destroy_ctx()
-    {
-        CUDA_CALL_HANDLER(ucs_warn, , cudaFreeHost, m_cpu_ctx);
-    }
-
+protected:
+    ucx_perf_context_t &m_perf;
     ucx_perf_cuda_context *m_cpu_ctx;
     ucx_perf_cuda_context *m_gpu_ctx;
-    double                m_poll_interval;
+
+private:
+    void init_ctx()
+    {
+        CUDA_CALL(, UCS_LOG_LEVEL_FATAL, cudaHostAlloc, &m_cpu_ctx,
+                  sizeof(ucx_perf_cuda_context), cudaHostAllocMapped);
+        CUDA_CALL(, UCS_LOG_LEVEL_FATAL, cudaHostGetDevicePointer,
+                  &m_gpu_ctx, m_cpu_ctx, 0);
+    }
 };
 
 
@@ -158,7 +201,9 @@ template<typename Runner> ucs_status_t
 ucx_perf_cuda_dispatch(ucx_perf_context_t *perf)
 {
     Runner runner(*perf);
-    if (perf->params.command == UCX_PERF_CMD_PUT_MULTI) {
+    if ((perf->params.command == UCX_PERF_CMD_PUT_MULTI) ||
+        (perf->params.command == UCX_PERF_CMD_PUT_SINGLE) ||
+        (perf->params.command == UCX_PERF_CMD_PUT_PARTIAL)) {
         if (perf->params.test_type == UCX_PERF_TEST_TYPE_PINGPONG) {
             return runner.run_pingpong();
         } else if (perf->params.test_type == UCX_PERF_TEST_TYPE_STREAM_UNI) {
