@@ -121,6 +121,12 @@ typedef struct {
 
     /* Pointer to the corresponding initialization data */
     const ucp_proto_init_elem_t *init_elem;
+
+    /* Number of times this protocol was selected */
+    unsigned                    selections;
+
+    /* Progress wrapper callbacks */
+    uct_pending_callback_t      progress_wrapper[UCP_PROTO_STAGE_LAST];
 } ucp_proto_config_t;
 
 
@@ -161,6 +167,9 @@ typedef struct {
         uint64_t                      key;
         const ucp_proto_select_elem_t *value;
     } cache;
+
+    /* Epoch (generation) counter. @see ucp_worker::epoch */
+    uint64_t                          worker_epoch;
 } ucp_proto_select_t;
 
 
@@ -177,10 +186,15 @@ typedef struct {
 } ucp_proto_select_short_t;
 
 
-ucs_status_t ucp_proto_select_init(ucp_proto_select_t *proto_select);
+ucs_status_t ucp_proto_select_init(ucp_proto_select_t *proto_select,
+                                   uint64_t epoch);
 
 
 void ucp_proto_select_cleanup(ucp_proto_select_t *proto_select);
+
+
+void ucp_proto_select_trace(ucp_worker_h worker,
+                            const ucp_proto_select_t *proto_select);
 
 
 void ucp_proto_select_add_proto(const ucp_proto_init_params_t *init_params,
