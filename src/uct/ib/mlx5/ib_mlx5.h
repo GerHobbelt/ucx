@@ -219,6 +219,10 @@ enum {
     UCT_IB_MLX5_MD_FLAG_DEVX_CQ          = UCT_IB_MLX5_MD_FLAG_DEVX_OBJS(CQ),
 };
 
+#define UCT_IB_MLX5_MD_FLAG_DEVX_OBJS_MASK \
+    (UCT_IB_MLX5_MD_FLAG_DEVX_RC_QP | UCT_IB_MLX5_MD_FLAG_DEVX_RC_SRQ | \
+     UCT_IB_MLX5_MD_FLAG_DEVX_DCT | UCT_IB_MLX5_MD_FLAG_DEVX_DC_SRQ | \
+     UCT_IB_MLX5_MD_FLAG_DEVX_DCI | UCT_IB_MLX5_MD_FLAG_DEVX_CQ)
 
 enum {
     UCT_IB_MLX5_SRQ_TOPO_LIST         = 0x0,
@@ -441,11 +445,16 @@ typedef struct uct_ib_mlx5_md {
     uint8_t                  log_max_dci_stream_channels;
     uint32_t                 smkey_index;
     struct {
-        /* Max dp ordering level per transport,
+        /* Max dp ordering level per transport in DevX,
            as listed in uct_ib_mlx5_dp_ordering_t */
         uint8_t              rc;
         uint8_t              dc;
-    } dp_ordering_cap;
+    } dp_ordering_cap_devx;
+    struct {
+        /* DDP support per transport in DV API */
+        uint8_t              rc;
+        uint8_t              dc;
+    } ddp_support_dv;
 } uct_ib_mlx5_md_t;
 
 

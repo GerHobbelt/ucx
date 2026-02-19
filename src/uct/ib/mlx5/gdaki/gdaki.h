@@ -10,6 +10,7 @@
 #include <uct/base/uct_iface.h>
 
 #include <cuda.h>
+#include <pthread.h>
 
 #include "gdaki_dev.h"
 
@@ -24,6 +25,7 @@ typedef struct uct_rc_gdaki_iface {
     CUdeviceptr                atomic_raw;
     uint64_t                   *atomic_buff;
     CUcontext                  cuda_ctx;
+    pthread_mutex_t            ep_init_lock;
 } uct_rc_gdaki_iface_t;
 
 
@@ -35,6 +37,7 @@ typedef struct uct_rc_gdaki_ep {
     CUdeviceptr                  ep_raw;
     uct_rc_gdaki_dev_ep_t        *ep_gpu;
     void                         *sq_db;
+    uint8_t                      dev_ep_init;
 } uct_rc_gdaki_ep_t;
 
 #endif /* UCT_GDAKI_IFACE_H */
