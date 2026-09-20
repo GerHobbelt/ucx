@@ -193,6 +193,7 @@ gtest_SOURCES = \
 	ucs/test_bitops.cc \
 	ucs/test_debug.cc \
 	ucs/test_interval_tree.cc \
+	ucs/test_rbtree.cc \
     ucs/test_lru.cc \
 	ucs/test_memtrack.cc \
 	ucs/test_math.cc \
@@ -209,6 +210,7 @@ gtest_SOURCES = \
 	ucs/test_string.cc \
 	ucs/test_sys.cc \
 	ucs/test_topo.cc \
+	ucs/test_topo_groups.cc \
 	ucs/test_sock.cc \
 	ucs/test_time.cc \
 	ucs/test_twheel.cc \
@@ -262,7 +264,6 @@ gtest_SOURCES += \
 endif
 if HAVE_MLX5_DV
 gtest_SOURCES += \
-	uct/ib/test_ib_mlx5_ext.cc \
 	uct/ib/test_cqe_zipping.cc
 endif
 if HAVE_EFA
@@ -348,6 +349,8 @@ noinst_HEADERS = \
 	common/test.h \
 	common/test_helpers.h \
 	common/test_perf.h \
+	\
+	ucs/rbtree_check.h \
 	\
 	uct/ib/test_rc.h \
 	uct/ib/ud_base.h \
