@@ -149,6 +149,7 @@ gtest_SOURCES = \
 	ucp/test_ucp_peer_failure.cc \
 	ucp/test_ucp_fault_tolerance.cc \
 	ucp/test_ucp_atomic.cc \
+	ucp/test_ucp_gpu_nic_assignment.cc \
 	ucp/test_ucp_dt.cc \
 	ucp/test_ucp_tls.cc \
 	ucp/test_ucp_memheap.cc \
@@ -319,15 +320,19 @@ include $(top_srcdir)/config/hip.am
 gtest_SOURCES += \
 	ucm/rocm_hooks.cc \
 	uct/rocm/test_kernels_uct.hip \
-	uct/rocm/test_rocm_ipc_device.hip
+	uct/rocm/test_rocm_ipc_device.hip \
+	uct/rocm/test_rocm_signal.cc
 
 gtest_CPPFLAGS += \
-	$(HIP_CPPFLAGS)
+	$(HIP_CPPFLAGS) \
+	$(ROCM_CPPFLAGS)
 gtest_CXXFLAGS += \
 	$(HIP_CXXFLAGS)
 gtest_LDADD += \
 	$(HIP_LDFLAGS) \
 	$(HIP_LIBS) \
+	$(ROCM_LDFLAGS) \
+	$(ROCM_LIBS) \
 	$(top_builddir)/src/uct/rocm/libuct_rocm.la
 endif # HAVE_GNUXX11
 endif # HAVE_HIP
